@@ -1,0 +1,7 @@
+streamlit
+gspread
+google-auth
+python-dotenv
+pandas
+openai
+pillow

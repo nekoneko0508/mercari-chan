@@ -1,0 +1,7 @@
+.env
+service_account.json
+uploads/
+generated_images/
+__pycache__/
+*.pyc
+.DS_Store
