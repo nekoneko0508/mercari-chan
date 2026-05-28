@@ -8,4 +8,3 @@ dist
 *.log
 service_account.json
 streamlit_secrets.txt
-outputs
