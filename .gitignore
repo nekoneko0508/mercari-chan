@@ -8,3 +8,4 @@ dist
 *.log
 service_account.json
 streamlit_secrets.txt
+app_backup_*.py
