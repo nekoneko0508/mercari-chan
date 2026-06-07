@@ -5,3 +5,5 @@ python-dotenv
 pandas
 openai
 pillow
+google-api-python-client
+requests

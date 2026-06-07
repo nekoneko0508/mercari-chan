@@ -2,13 +2,17 @@ import os
 import json
 import uuid
 import base64
+import io
 from datetime import date, datetime
+import requests
 
 import streamlit as st
 import gspread
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from openai import OpenAI
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 load_dotenv()
 
@@ -17,6 +21,9 @@ WORKSHEET_NAME = "メルカリちゃん在庫"
 DESCRIPTION_SHEET_NAME = "商品説明ログ"
 PURCHASE_SHEET_NAME = "買付登録"
 SERVICE_ACCOUNT_FILE = "service_account.json"
+DRIVE_FOLDER_ID = "1gNzzHYcjQcO7emNLWAQph9c8hIw-aXXG"
+APPS_SCRIPT_PHOTO_URL = "https://script.google.com/macros/s/AKfycbzCY9tsIZuSqbVMyCuTZvhwYrRLXwvEzVYqcA2kiCtQZ_aqHskn9OfaylmGsgmbtNpT/exec"
+PHOTO_SAVE_TOKEN = "mercari-chan-photo-save"
 
 # ローカルでは .env、公開版では Streamlit Secrets からAPIキーを読む
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -93,7 +100,7 @@ PURCHASE_HEADERS = [
     "買付ステータス"
 ]
 
-def get_spreadsheet():
+def get_credentials():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -102,21 +109,23 @@ def get_spreadsheet():
     # ローカルでは service_account.json、公開版では Streamlit Secrets から読む
     try:
         if "gcp_service_account" in st.secrets:
-            credentials = Credentials.from_service_account_info(
+            return Credentials.from_service_account_info(
                 dict(st.secrets["gcp_service_account"]),
                 scopes=scopes
             )
         else:
-            credentials = Credentials.from_service_account_file(
+            return Credentials.from_service_account_file(
                 SERVICE_ACCOUNT_FILE,
                 scopes=scopes
             )
     except Exception:
-        credentials = Credentials.from_service_account_file(
+        return Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE,
             scopes=scopes
         )
 
+def get_spreadsheet():
+    credentials = get_credentials()
     gc = gspread.authorize(credentials)
     return gc.open_by_key(SPREADSHEET_ID)
 
@@ -180,17 +189,35 @@ def save_uploaded_purchase_photo(uploaded_file):
     if uploaded_file is None:
         return "", ""
 
-    os.makedirs("uploads", exist_ok=True)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = uploaded_file.name.replace(" ", "_")
     file_name = f"purchase_{timestamp}_{safe_name}"
-    file_path = os.path.join("uploads", file_name)
 
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    base64_data = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
 
-    return file_name, file_path
+    payload = {
+        "token": PHOTO_SAVE_TOKEN,
+        "fileName": file_name,
+        "mimeType": uploaded_file.type,
+        "base64Data": base64_data
+    }
+
+    response = requests.post(APPS_SCRIPT_PHOTO_URL, json=payload, timeout=60)
+
+    # Apps Scriptから返ってきた内容を確認しやすくする
+    if response.status_code != 200:
+        raise Exception(f"Apps Scriptエラー status={response.status_code}: {response.text[:500]}")
+
+    try:
+        result = response.json()
+    except Exception:
+        raise Exception(f"Apps ScriptからJSON以外が返ってきました: {response.text[:500]}")
+
+    if not result.get("success"):
+        raise Exception(result.get("error", "写真保存に失敗しました"))
+
+    file_url = result.get("fileUrl", "")
+    return file_name, file_url
 
 def analyze_photo(uploaded_file, product_name, category):
     image_base64 = image_to_base64(uploaded_file)
