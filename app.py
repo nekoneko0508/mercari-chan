@@ -794,16 +794,6 @@ st.markdown(
         margin: 0;
     }
 
-    .app-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 18px;
-        padding: 8px 0 18px;
-        border-bottom: 1px solid var(--mercari-border);
-        margin-bottom: 20px;
-    }
-
     .brand-title {
         font-size: 2.2rem;
         line-height: 1.1;
@@ -819,63 +809,6 @@ st.markdown(
         margin-top: 8px;
         color: #344054;
         font-weight: 600;
-    }
-
-    .header-metrics {
-        display: flex;
-        gap: 16px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-    }
-
-    .metric-card {
-        min-width: 220px;
-        border: 1px solid #d9eadf;
-        background: linear-gradient(135deg, #f7fffb, #ffffff);
-        border-radius: 12px;
-        padding: 16px 20px;
-        display: flex;
-        align-items: center;
-        gap: 14px;
-    }
-
-    .metric-card.profit {
-        border-color: #f2dfb9;
-        background: linear-gradient(135deg, #fffaf0, #ffffff);
-    }
-
-    .metric-icon {
-        width: 48px;
-        height: 48px;
-        border-radius: 12px;
-        display: grid;
-        place-items: center;
-        font-size: 1.9rem;
-        color: var(--mercari-green);
-        border: 3px solid currentColor;
-    }
-
-    .profit .metric-icon {
-        color: var(--mercari-yellow);
-        border-radius: 50%;
-    }
-
-    .metric-label {
-        font-weight: 700;
-        color: #344054;
-        font-size: .95rem;
-    }
-
-    .metric-value {
-        color: var(--mercari-text);
-        font-size: 1.9rem;
-        font-weight: 900;
-        line-height: 1.1;
-    }
-
-    .metric-value small {
-        font-size: .9rem;
-        margin-left: 2px;
     }
 
     .sidebar-menu {
@@ -928,16 +861,6 @@ st.markdown(
         color: #344054;
         font-weight: 600;
         margin-left: 10px;
-    }
-
-    .guide-button {
-        border: 1px solid #d0d5dd;
-        border-radius: 9px;
-        padding: 10px 16px;
-        color: #344054;
-        font-weight: 800;
-        background: #ffffff;
-        white-space: nowrap;
     }
 
     .section-title {
@@ -1066,20 +989,9 @@ st.markdown(
             padding-right: 1rem;
         }
 
-        .app-header,
         .page-title-row {
             align-items: flex-start;
             flex-direction: column;
-        }
-
-        .header-metrics {
-            width: 100%;
-            justify-content: stretch;
-        }
-
-        .metric-card {
-            min-width: 0;
-            width: 100%;
         }
 
         .brand-title {
@@ -1120,23 +1032,15 @@ st.sidebar.markdown(
     unsafe_allow_html=True
 )
 
-header_left, header_inventory, header_profit = st.columns([3, 1.15, 1.15], gap="large")
-with header_left:
-    st.markdown(
-        """
-        <div class="app-header-text">
-            <div class="brand-title">🛍️ <span>メルカリ</span>ちゃん</div>
-            <div class="brand-copy">買付から出品・売上管理まで、あなたの物販をサポート！</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-with header_inventory:
-    with st.container(border=True):
-        st.metric("在庫数（出品可能）", "48点")
-with header_profit:
-    with st.container(border=True):
-        st.metric("今月の利益", "¥128,560")
+st.markdown(
+    """
+    <div class="app-header-text">
+        <div class="brand-title">🛍️ <span>メルカリ</span>ちゃん</div>
+        <div class="brand-copy">買付から出品・売上管理まで、あなたの物販をサポート！</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 st.divider()
 
@@ -1359,7 +1263,6 @@ with tab3:
                 <span class="page-title">🛒 買付登録</span>
                 <span class="page-description">仕入れた商品の情報と写真を登録します</span>
             </div>
-            <div class="guide-button">📖 使い方ガイド</div>
         </div>
         """,
         unsafe_allow_html=True
