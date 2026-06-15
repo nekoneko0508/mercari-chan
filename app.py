@@ -1120,35 +1120,33 @@ st.sidebar.markdown(
     unsafe_allow_html=True
 )
 
-st.markdown(
-    """
-    <div class="app-header">
-        <div>
+header_left, header_inventory, header_profit = st.columns([3, 1.15, 1.15], gap="large")
+with header_left:
+    st.markdown(
+        """
+        <div class="app-header-text">
             <div class="brand-title">🛍️ <span>メルカリ</span>ちゃん</div>
             <div class="brand-copy">買付から出品・売上管理まで、あなたの物販をサポート！</div>
         </div>
-        <div class="header-metrics">
-            <div class="metric-card">
-                <div class="metric-icon">✓</div>
-                <div>
-                    <div class="metric-label">在庫数（出品可能）</div>
-                    <div class="metric-value">48<small>点</small></div>
-                </div>
-            </div>
-            <div class="metric-card profit">
-                <div class="metric-icon">¥</div>
-                <div>
-                    <div class="metric-label">今月の利益</div>
-                    <div class="metric-value">¥128,560</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+        """,
+        unsafe_allow_html=True
+    )
+with header_inventory:
+    with st.container(border=True):
+        st.metric("在庫数（出品可能）", "48点")
+with header_profit:
+    with st.container(border=True):
+        st.metric("今月の利益", "¥128,560")
 
-tab3, tab2, tab1, tab4 = st.tabs(["買付登録", "AI出品サポート", "在庫登録", "買付・AI出品登録"])
+st.divider()
+
+tab3, tab2, tab1, tab4, tab5 = st.tabs([
+    "買付登録",
+    "AI出品サポート",
+    "在庫登録",
+    "買付・AI出品登録",
+    "使い方ガイド"
+])
 
 with tab1:
     st.subheader("商品登録")
@@ -1812,3 +1810,31 @@ with tab4:
         st.write("高めに売る価格：", saved.get("premium_price", ""))
         st.write("おすすめ販売価格：", saved.get("recommended_price", ""))
         st.write("価格理由：", saved.get("price_reason", ""))
+
+with tab5:
+    st.subheader("使い方ガイド")
+    st.write("メルカリちゃんの基本的な使い方を確認できます。")
+
+    guide_col1, guide_col2 = st.columns(2)
+
+    with guide_col1:
+        with st.container(border=True):
+            st.write("### 1. 買付登録")
+            st.write("仕入れた商品の写真、商品名、購入価格、色、サイズ、数量などを登録します。")
+            st.write("写真はGoogle Driveの「メルカリちゃん買付写真」フォルダに保存され、写真URLが買付登録シートに入ります。")
+
+        with st.container(border=True):
+            st.write("### 2. 買付・AI出品登録")
+            st.write("買付情報、在庫登録、AI商品説明作成までまとめて行います。")
+            st.write("写真は買付登録と同じ保存処理でGoogle Driveに保存されます。")
+
+    with guide_col2:
+        with st.container(border=True):
+            st.write("### 3. AI出品サポート")
+            st.write("写真や商品情報から、メルカリ用のタイトル・商品説明・価格提案を作成します。")
+
+        with st.container(border=True):
+            st.write("### 困ったとき")
+            st.write("- 写真保存でエラーが出る場合は、Apps Script URLと保存トークンを確認してください。")
+            st.write("- スプレッドシート保存でエラーが出る場合は、サービスアカウントの権限を確認してください。")
+            st.write("- LINEから開いた場合も、まず買付登録タブから登録できます。")
