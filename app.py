@@ -535,25 +535,25 @@ def save_description_to_text_file(data):
     return file_path
 
 def save_uploaded_purchase_photos(product_id, product_name, uploaded_files):
+    """複数写真も買付登録と同じApps Script経由でGoogle Driveへ保存する。"""
     if not uploaded_files:
         return [], ""
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_product_name = make_safe_file_name(product_name)
-    folder_name = f"{product_id}_{safe_product_name}_{timestamp}"
-    folder_path = os.path.join("uploads", folder_name)
-    os.makedirs(folder_path, exist_ok=True)
-
     saved_file_names = []
-    for index, uploaded_file in enumerate(uploaded_files, start=1):
-        safe_original_name = make_safe_file_name(uploaded_file.name)
-        file_name = f"{index:02d}_{safe_original_name}"
-        file_path = os.path.join(folder_path, file_name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        saved_file_names.append(file_name)
+    saved_file_urls = []
 
-    return saved_file_names, folder_path
+    for index, uploaded_file in enumerate(uploaded_files, start=1):
+        try:
+            file_name, file_url = save_uploaded_purchase_photo(uploaded_file)
+            if file_name:
+                saved_file_names.append(file_name)
+            if file_url:
+                saved_file_urls.append(file_url)
+        except Exception as e:
+            original_name = getattr(uploaded_file, "name", f"{index}枚目の写真")
+            raise Exception(f"{original_name} のGoogle Drive保存に失敗しました: {e}")
+
+    return saved_file_names, ", ".join(saved_file_urls)
 
 def save_purchase_to_sheet(data):
     worksheet = connect_purchase_sheet()
@@ -634,16 +634,521 @@ def update_inventory_price_suggestions(row_number, data):
     ]
     worksheet.update(f"S{row_number}:W{row_number}", [row])
 
+def get_recent_purchase_rows(limit=3):
+    """買付登録シートの直近データを表示用に整える。失敗時は画面を止めず仮データにする。"""
+    fallback_rows = [
+        {
+            "登録日時": "2024/05/28 14:23",
+            "商品名": "ハワイアンパンツ",
+            "購入価格": "¥1,500",
+            "色": "ホワイト",
+            "サイズ": "フリー",
+            "数量": "1",
+            "写真": "登録済み",
+            "保存先": "Google Drive"
+        }
+    ]
+
+    try:
+        worksheet = connect_purchase_sheet()
+        records = worksheet.get_all_records()
+        if not records:
+            return fallback_rows
+
+        rows = []
+        for record in records[-limit:][::-1]:
+            purchase_price = record.get("購入価格", "")
+            if isinstance(purchase_price, (int, float)):
+                purchase_price = f"¥{purchase_price:,.0f}"
+
+            folder_url = str(record.get("商品写真フォルダ", "") or "")
+            rows.append(
+                {
+                    "登録日時": record.get("登録日時", ""),
+                    "商品名": record.get("商品名", ""),
+                    "購入価格": purchase_price,
+                    "色": record.get("色", ""),
+                    "サイズ": record.get("サイズ", ""),
+                    "数量": record.get("数量", ""),
+                    "写真": "登録済み" if record.get("商品写真ファイル名一覧", "") else "なし",
+                    "保存先": folder_url if folder_url else "未登録"
+                }
+            )
+        return rows
+    except Exception:
+        return fallback_rows
+
+def reset_purchase_form():
+    """買付登録フォームの入力値だけをリセットする。"""
+    keys = [
+        "purchase_buyer_name",
+        "purchase_product_name",
+        "purchase_brand",
+        "purchase_price",
+        "purchase_color",
+        "purchase_size",
+        "purchase_place",
+        "purchase_category",
+        "purchase_memo"
+    ]
+    for key in keys:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state["purchase_quantity"] = 1
+
+def render_purchase_table(rows):
+    table_rows = []
+    for row in rows:
+        save_to = row.get("保存先", "")
+        if str(save_to).startswith("http"):
+            save_to_html = f'<a href="{save_to}" target="_blank">Google Drive</a>'
+        else:
+            save_to_html = save_to
+
+        table_rows.append(
+            "<tr>"
+            f"<td>{row.get('登録日時', '')}</td>"
+            f"<td>{row.get('商品名', '')}</td>"
+            f"<td>{row.get('購入価格', '')}</td>"
+            f"<td>{row.get('色', '')}</td>"
+            f"<td>{row.get('サイズ', '')}</td>"
+            f"<td>{row.get('数量', '')}</td>"
+            f"<td>{row.get('写真', '')}</td>"
+            f"<td>{save_to_html}</td>"
+            "</tr>"
+        )
+
+    st.markdown(
+        """
+        <div class="recent-table-card">
+            <div class="section-title">📋 最近の買付登録</div>
+            <div class="table-scroll">
+                <table class="recent-table">
+                    <thead>
+                        <tr>
+                            <th>登録日時</th>
+                            <th>商品名</th>
+                            <th>購入価格</th>
+                            <th>色</th>
+                            <th>サイズ</th>
+                            <th>数量</th>
+                            <th>写真</th>
+                            <th>保存先</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        """.format(rows="".join(table_rows)),
+        unsafe_allow_html=True
+    )
+
 st.set_page_config(
     page_title="メルカリちゃん",
     page_icon="🛍️",
     layout="wide"
 )
 
-st.title("🛍️ メルカリちゃん")
-st.write("仕入れた商品の在庫管理と、メルカリ出品準備をサポートするAI社員です。")
+st.markdown(
+    """
+    <style>
+    :root {
+        --mercari-red: #f5222d;
+        --mercari-pink: #fff1f1;
+        --mercari-border: #e8edf3;
+        --mercari-text: #202734;
+        --mercari-muted: #667085;
+        --mercari-green: #12a673;
+        --mercari-yellow: #f0aa00;
+    }
 
-tab1, tab2, tab3, tab4 = st.tabs(["在庫登録", "AI出品サポート", "買付登録フォーム", "買付・AI出品登録"])
+    .block-container {
+        padding-top: 1.1rem;
+        padding-bottom: 2.2rem;
+        max-width: 1540px;
+    }
+
+    [data-testid="stApp"],
+    [data-testid="stAppViewContainer"] {
+        background: #ffffff;
+        color: var(--mercari-text);
+    }
+
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] label,
+    label,
+    p {
+        color: var(--mercari-text);
+    }
+
+    [data-testid="stSidebar"] {
+        background: #fbfdff;
+        border-right: 1px solid var(--mercari-border);
+    }
+
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+        margin: 0;
+    }
+
+    .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 8px 0 18px;
+        border-bottom: 1px solid var(--mercari-border);
+        margin-bottom: 20px;
+    }
+
+    .brand-title {
+        font-size: 2.2rem;
+        line-height: 1.1;
+        font-weight: 900;
+        color: var(--mercari-text);
+    }
+
+    .brand-title span {
+        color: var(--mercari-red);
+    }
+
+    .brand-copy {
+        margin-top: 8px;
+        color: #344054;
+        font-weight: 600;
+    }
+
+    .header-metrics {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .metric-card {
+        min-width: 220px;
+        border: 1px solid #d9eadf;
+        background: linear-gradient(135deg, #f7fffb, #ffffff);
+        border-radius: 12px;
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .metric-card.profit {
+        border-color: #f2dfb9;
+        background: linear-gradient(135deg, #fffaf0, #ffffff);
+    }
+
+    .metric-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        font-size: 1.9rem;
+        color: var(--mercari-green);
+        border: 3px solid currentColor;
+    }
+
+    .profit .metric-icon {
+        color: var(--mercari-yellow);
+        border-radius: 50%;
+    }
+
+    .metric-label {
+        font-weight: 700;
+        color: #344054;
+        font-size: .95rem;
+    }
+
+    .metric-value {
+        color: var(--mercari-text);
+        font-size: 1.9rem;
+        font-weight: 900;
+        line-height: 1.1;
+    }
+
+    .metric-value small {
+        font-size: .9rem;
+        margin-left: 2px;
+    }
+
+    .sidebar-menu {
+        padding-top: 12px;
+    }
+
+    .sidebar-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        margin: 6px 0;
+        border-radius: 10px;
+        color: #344054;
+        font-weight: 700;
+    }
+
+    .sidebar-item.active {
+        background: linear-gradient(90deg, #ffe6e6, #fff4f4);
+        color: var(--mercari-red);
+    }
+
+    .line-card {
+        margin-top: 26px;
+        padding: 14px;
+        border: 1px solid #ccebd9;
+        background: #f3fff8;
+        border-radius: 10px;
+        color: #079455;
+        font-weight: 800;
+        line-height: 1.5;
+    }
+
+    .page-title-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 14px;
+    }
+
+    .page-title {
+        color: var(--mercari-red);
+        font-size: 2rem;
+        font-weight: 900;
+        line-height: 1.2;
+    }
+
+    .page-description {
+        color: #344054;
+        font-weight: 600;
+        margin-left: 10px;
+    }
+
+    .guide-button {
+        border: 1px solid #d0d5dd;
+        border-radius: 9px;
+        padding: 10px 16px;
+        color: #344054;
+        font-weight: 800;
+        background: #ffffff;
+        white-space: nowrap;
+    }
+
+    .section-title {
+        font-size: 1.2rem;
+        font-weight: 900;
+        color: #202734;
+        margin-bottom: 12px;
+    }
+
+    .pill {
+        display: inline-block;
+        background: #fff1f1;
+        color: var(--mercari-red);
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: .82rem;
+        margin-left: 6px;
+    }
+
+    .drive-note {
+        border: 1px solid #c9defd;
+        background: #f5f9ff;
+        border-radius: 10px;
+        padding: 13px 14px;
+        color: #174ea6;
+        font-weight: 800;
+        margin-top: 12px;
+    }
+
+    .drive-note small {
+        color: #344054;
+        font-weight: 600;
+    }
+
+    .recent-table-card {
+        border: 1px solid var(--mercari-border);
+        border-radius: 12px;
+        padding: 16px;
+        margin-top: 16px;
+        box-shadow: 0 8px 22px rgba(16, 24, 40, .04);
+    }
+
+    .table-scroll {
+        overflow-x: auto;
+    }
+
+    .recent-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 820px;
+        font-size: .94rem;
+    }
+
+    .recent-table th,
+    .recent-table td {
+        border-top: 1px solid var(--mercari-border);
+        padding: 12px 10px;
+        text-align: left;
+        white-space: nowrap;
+    }
+
+    .recent-table th {
+        color: #202734;
+        background: #fafafa;
+        font-weight: 900;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 13px;
+        border-color: var(--mercari-border);
+        box-shadow: 0 8px 22px rgba(16, 24, 40, .04);
+    }
+
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stTextArea textarea {
+        background: #ffffff !important;
+        border: 1px solid #d0d5dd !important;
+        border-radius: 9px;
+        color: var(--mercari-text) !important;
+        min-height: 44px;
+        font-size: 1rem;
+    }
+
+    .stTextInput input::placeholder,
+    .stTextArea textarea::placeholder {
+        color: #98a2b3 !important;
+        opacity: 1 !important;
+    }
+
+    .stButton button {
+        border-radius: 9px;
+        min-height: 46px;
+        font-weight: 900;
+    }
+
+    .stButton button[kind="primary"] {
+        background: var(--mercari-red) !important;
+        border-color: var(--mercari-red) !important;
+        color: #ffffff !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] {
+        border: 2px dashed #c9cdd4;
+        border-radius: 13px;
+        padding: 24px 14px;
+        background: #ffffff !important;
+        color: #344054 !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] * {
+        color: #344054 !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] button {
+        border-color: var(--mercari-red);
+        color: var(--mercari-red) !important;
+        font-weight: 900;
+    }
+
+    @media (max-width: 820px) {
+        .block-container {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+        .app-header,
+        .page-title-row {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+
+        .header-metrics {
+            width: 100%;
+            justify-content: stretch;
+        }
+
+        .metric-card {
+            min-width: 0;
+            width: 100%;
+        }
+
+        .brand-title {
+            font-size: 1.8rem;
+        }
+
+        .page-title {
+            font-size: 1.7rem;
+        }
+
+        .page-description {
+            display: block;
+            margin-left: 0;
+            margin-top: 6px;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.sidebar.markdown(
+    """
+    <div class="sidebar-menu">
+        <div class="sidebar-item">🏠 ホーム</div>
+        <div class="sidebar-item active">🛒 買付登録</div>
+        <div class="sidebar-item">✨ AI出品登録</div>
+        <div class="sidebar-item">🧰 在庫一覧</div>
+        <div class="sidebar-item">🏷️ 売上登録・在庫更新</div>
+        <div class="sidebar-item">📈 売上管理</div>
+        <div class="sidebar-item">🖼️ 写真加工</div>
+        <div class="sidebar-item">📋 データ一覧</div>
+        <div class="sidebar-item">⚙️ 設定</div>
+        <div class="sidebar-item">📖 使い方ガイド</div>
+        <div class="line-card">LINE公式アカウントからも<br>登録できます！</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    """
+    <div class="app-header">
+        <div>
+            <div class="brand-title">🛍️ <span>メルカリ</span>ちゃん</div>
+            <div class="brand-copy">買付から出品・売上管理まで、あなたの物販をサポート！</div>
+        </div>
+        <div class="header-metrics">
+            <div class="metric-card">
+                <div class="metric-icon">✓</div>
+                <div>
+                    <div class="metric-label">在庫数（出品可能）</div>
+                    <div class="metric-value">48<small>点</small></div>
+                </div>
+            </div>
+            <div class="metric-card profit">
+                <div class="metric-icon">¥</div>
+                <div>
+                    <div class="metric-label">今月の利益</div>
+                    <div class="metric-value">¥128,560</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+tab3, tab2, tab1, tab4 = st.tabs(["買付登録", "AI出品サポート", "在庫登録", "買付・AI出品登録"])
 
 with tab1:
     st.subheader("商品登録")
@@ -849,36 +1354,186 @@ with tab2:
                     st.write(e)
 
 with tab3:
-    st.subheader("買付登録フォーム")
-    st.write("買付先で写真・価格・色・サイズ・数量を記録します。")
-
-    purchase_photo = st.file_uploader(
-        "商品写真",
-        type=["jpg", "jpeg", "png"],
-        key="purchase_photo"
+    st.markdown(
+        """
+        <div class="page-title-row">
+            <div>
+                <span class="page-title">🛒 買付登録</span>
+                <span class="page-description">仕入れた商品の情報と写真を登録します</span>
+            </div>
+            <div class="guide-button">📖 使い方ガイド</div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-    if purchase_photo is not None:
-        st.image(purchase_photo, caption="登録する商品写真", width=350)
+    form_column, photo_column = st.columns([1, 1], gap="large")
 
-    buyer_name = st.text_input("登録者名")
-    purchase_product_name = st.text_input("商品名", key="purchase_product_name")
-    purchase_price = st.number_input("購入価格", min_value=0, step=100, key="purchase_price")
-    purchase_color = st.text_input("色")
-    purchase_size = st.text_input("サイズ")
-    purchase_quantity = st.number_input("数量", min_value=1, step=1, value=1)
-    purchase_place = st.text_input("購入場所")
-    purchase_category = st.text_input("カテゴリ", key="purchase_category")
-    purchase_memo = st.text_area("メモ", placeholder="素材感、傷、付属品、販売時の注意点など")
+    with form_column:
+        with st.container(border=True):
+            st.markdown('<div class="section-title">🧾 商品情報を入力</div>', unsafe_allow_html=True)
 
-    if st.button("買付情報を保存する"):
+            buyer_name = st.text_input(
+                "登録者名",
+                placeholder="例）山田",
+                key="purchase_buyer_name"
+            )
+
+            first_row_left, first_row_right = st.columns(2)
+            with first_row_left:
+                purchase_product_name = st.text_input(
+                    "商品名（必須）",
+                    placeholder="例）花柄ワンピース",
+                    key="purchase_product_name"
+                )
+            with first_row_right:
+                purchase_brand = st.text_input(
+                    "ブランド",
+                    placeholder="例）ZARA",
+                    key="purchase_brand"
+                )
+
+            second_row_left, second_row_right = st.columns(2)
+            with second_row_left:
+                purchase_price = st.number_input(
+                    "購入価格（必須）",
+                    min_value=0,
+                    step=100,
+                    format="%d",
+                    key="purchase_price",
+                    help="円単位で入力してください"
+                )
+            with second_row_right:
+                purchase_quantity = st.number_input(
+                    "数量（必須）",
+                    min_value=1,
+                    step=1,
+                    value=1,
+                    key="purchase_quantity"
+                )
+
+            third_row_left, third_row_right = st.columns(2)
+            with third_row_left:
+                purchase_color = st.text_input(
+                    "色",
+                    placeholder="例）ネイビー",
+                    key="purchase_color"
+                )
+            with third_row_right:
+                purchase_size = st.text_input(
+                    "サイズ",
+                    placeholder="例）M",
+                    key="purchase_size"
+                )
+
+            fourth_row_left, fourth_row_right = st.columns(2)
+            with fourth_row_left:
+                purchase_place = st.text_input(
+                    "仕入れ先",
+                    placeholder="例）ハワイ・アラモアナセンター",
+                    key="purchase_place"
+                )
+            with fourth_row_right:
+                purchase_date = st.date_input(
+                    "仕入れ日",
+                    value=date.today(),
+                    key="purchase_date"
+                )
+
+            purchase_category = st.text_input(
+                "カテゴリ",
+                placeholder="例）レディース ワンピース",
+                key="purchase_category"
+            )
+            purchase_memo = st.text_area(
+                "メモ（任意）",
+                placeholder="商品の状態・特徴・気づいたことなどをメモできます",
+                key="purchase_memo",
+                height=110
+            )
+
+            reset_column, save_column = st.columns([1, 2])
+            with reset_column:
+                st.button("リセット", use_container_width=True, on_click=reset_purchase_form)
+            with save_column:
+                save_purchase_button = st.button(
+                    "買付情報を保存する",
+                    type="primary",
+                    use_container_width=True
+                )
+
+    with photo_column:
+        with st.container(border=True):
+            st.markdown(
+                '<div class="section-title">🖼️ 写真を登録 <span class="pill">最大10枚まで</span></div>',
+                unsafe_allow_html=True
+            )
+            purchase_photos = st.file_uploader(
+                "ここに写真をドラッグ＆ドロップ、または写真を選択",
+                type=["jpg", "jpeg", "png", "heic"],
+                accept_multiple_files=True,
+                key="purchase_photos",
+                help="JPG / PNG / HEIC に対応しています"
+            )
+
+            photo_count = len(purchase_photos) if purchase_photos else 0
+            st.caption("対応形式：JPG / PNG / HEIC")
+
+            if photo_count > 10:
+                st.error("写真は最大10枚まで登録できます。10枚以下にしてください。")
+            elif photo_count > 0:
+                st.caption(f"登録中の写真（{photo_count}枚）")
+                preview_columns = st.columns(min(photo_count, 5))
+                for index, uploaded_photo in enumerate(purchase_photos[:10]):
+                    with preview_columns[index % len(preview_columns)]:
+                        if uploaded_photo.type in ["image/jpeg", "image/png"]:
+                            st.image(uploaded_photo, caption=f"{index + 1}枚目", use_container_width=True)
+                        else:
+                            st.caption(f"{index + 1}枚目：{uploaded_photo.name}")
+            else:
+                st.info("スマホでは写真を選択して、そのまま買付情報と一緒に保存できます。")
+
+            st.markdown(
+                """
+                <div class="drive-note">
+                    写真は自動でGoogle Driveに保存されます<br>
+                    <small>保存先フォルダ：メルカリちゃん買付写真</small>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    if save_purchase_button:
+        photo_count = len(purchase_photos) if purchase_photos else 0
+
         if purchase_product_name == "":
             st.error("商品名を入力してください。")
         elif buyer_name == "":
             st.error("登録者名を入力してください。")
+        elif purchase_price <= 0:
+            st.error("購入価格を入力してください。")
+        elif photo_count > 10:
+            st.error("写真は最大10枚まで登録できます。")
         else:
             try:
-                photo_file_name, photo_file_path = save_uploaded_purchase_photo(purchase_photo)
+                saved_photo_names = []
+                saved_photo_urls = []
+
+                if purchase_photos:
+                    with st.spinner("写真をGoogle Driveへ保存しています。"):
+                        for uploaded_photo in purchase_photos:
+                            photo_file_name, photo_file_path = save_uploaded_purchase_photo(uploaded_photo)
+                            if photo_file_name:
+                                saved_photo_names.append(photo_file_name)
+                            if photo_file_path:
+                                saved_photo_urls.append(photo_file_path)
+
+                memo_lines = []
+                if purchase_brand:
+                    memo_lines.append(f"ブランド: {purchase_brand}")
+                memo_lines.append(f"仕入れ日: {purchase_date}")
+                if purchase_memo:
+                    memo_lines.append(purchase_memo)
 
                 data = {
                     "buyer_name": buyer_name,
@@ -889,26 +1544,26 @@ with tab3:
                     "quantity": purchase_quantity,
                     "place": purchase_place,
                     "category": purchase_category,
-                    "memo": purchase_memo,
-                    "photo_file_name": photo_file_name,
-                    "photo_file_path": photo_file_path
+                    "memo": "\n".join(memo_lines),
+                    "photo_file_name": ", ".join(saved_photo_names),
+                    "photo_file_path": ", ".join(saved_photo_urls)
                 }
 
-                save_purchase_to_sheet(data)
+                with st.spinner("買付情報をスプレッドシートへ保存しています。"):
+                    save_purchase_to_sheet(data)
 
                 st.success("買付情報をスプレッドシートに保存しました！")
                 st.info(f"保存先：{PURCHASE_SHEET_NAME}")
-
-                st.write("商品名：", purchase_product_name)
-                st.write("購入価格：", purchase_price)
-                st.write("色：", purchase_color)
-                st.write("サイズ：", purchase_size)
-                st.write("数量：", purchase_quantity)
-                st.write("写真保存先：", photo_file_path if photo_file_path else "写真なし")
+                if saved_photo_urls:
+                    st.markdown("写真保存先： " + " / ".join(f"[Google Drive]({url})" for url in saved_photo_urls))
+                else:
+                    st.write("写真保存先：写真なし")
 
             except Exception as e:
                 st.error("買付情報の保存でエラーが出ました。")
                 st.write(e)
+
+    render_purchase_table(get_recent_purchase_rows(limit=3))
 
 with tab4:
     st.subheader("買付・AI出品登録")
@@ -987,9 +1642,9 @@ with tab4:
                 st.warning("5枚あるとAIがより正確に判断できます")
 
             try:
-                with st.spinner("写真を保存しています。"):
+                with st.spinner("写真をGoogle Driveへ保存しています。"):
                     product_id = generate_product_id()
-                    saved_file_names, photo_folder_path = save_uploaded_purchase_photos(
+                    saved_file_names, photo_drive_urls = save_uploaded_purchase_photos(
                         product_id,
                         v3_product_name,
                         v3_photos
@@ -1006,7 +1661,7 @@ with tab4:
                     "category": v3_category,
                     "memo": v3_memo,
                     "photo_file_name": ", ".join(saved_file_names),
-                    "photo_file_path": photo_folder_path
+                    "photo_file_path": photo_drive_urls
                 }
 
                 with st.spinner("買付登録シートへ保存しています。"):
@@ -1023,7 +1678,7 @@ with tab4:
                     "packing_fee": v3_packing_fee,
                     "memo": v3_memo,
                     "description": "",
-                    "photo_folder_path": photo_folder_path
+                    "photo_folder_path": photo_drive_urls
                 }
 
                 with st.spinner("メルカリちゃん在庫へ保存しています。"):
@@ -1092,14 +1747,20 @@ with tab4:
 
                 st.session_state["v3_description_result"] = description_result
                 st.session_state["v3_saved_product_id"] = product_id
-                st.session_state["v3_photo_folder_path"] = photo_folder_path
+                st.session_state["v3_photo_drive_urls"] = photo_drive_urls
 
                 st.success("買付登録・在庫保存・AI商品説明作成が完了しました！")
                 st.info(f"買付登録保存先：{PURCHASE_SHEET_NAME}")
                 st.info(f"在庫保存先：{WORKSHEET_NAME}")
                 st.info(f"商品説明ログ保存先：{DESCRIPTION_SHEET_NAME}")
                 st.info(f"txt保存先：{saved_file_path}")
-                st.info(f"写真保存先：{photo_folder_path}")
+                if photo_drive_urls:
+                    drive_links = [
+                        f"[Google Drive {index + 1}]({url.strip()})"
+                        for index, url in enumerate(photo_drive_urls.split(","))
+                        if url.strip()
+                    ]
+                    st.markdown("写真保存先： " + " / ".join(drive_links))
 
             except Exception as e:
                 st.error("買付・AI出品登録でエラーが出ました。")
@@ -1110,7 +1771,16 @@ with tab4:
 
         st.write("### AI生成結果")
         st.write("商品ID：", st.session_state.get("v3_saved_product_id", ""))
-        st.write("写真保存先：", st.session_state.get("v3_photo_folder_path", ""))
+        photo_drive_urls = st.session_state.get("v3_photo_drive_urls", "")
+        if photo_drive_urls:
+            drive_links = [
+                f"[Google Drive {index + 1}]({url.strip()})"
+                for index, url in enumerate(photo_drive_urls.split(","))
+                if url.strip()
+            ]
+            st.markdown("写真保存先： " + " / ".join(drive_links))
+        else:
+            st.write("写真保存先：", "")
 
         st.write("### タイトル")
         st.write(saved.get("title", ""))
