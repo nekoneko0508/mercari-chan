@@ -678,23 +678,31 @@ def get_recent_purchase_rows(limit=3):
     except Exception:
         return fallback_rows
 
-def reset_purchase_form():
-    """買付登録フォームの入力値だけをリセットする。"""
+def reset_purchase_form(clear_save_result=True):
+    """買付登録フォームと写真アップロード欄をリセットする。"""
     keys = [
         "purchase_buyer_name",
         "purchase_product_name",
         "purchase_brand",
         "purchase_price",
+        "purchase_quantity",
         "purchase_color",
         "purchase_size",
         "purchase_place",
+        "purchase_date",
         "purchase_category",
         "purchase_memo"
     ]
     for key in keys:
         if key in st.session_state:
             del st.session_state[key]
-    st.session_state["purchase_quantity"] = 1
+
+    st.session_state["purchase_photo_uploader_version"] = (
+        st.session_state.get("purchase_photo_uploader_version", 0) + 1
+    )
+
+    if clear_save_result and "purchase_save_result" in st.session_state:
+        del st.session_state["purchase_save_result"]
 
 def render_purchase_table(rows):
     table_rows = []
@@ -1268,6 +1276,16 @@ with tab3:
         unsafe_allow_html=True
     )
 
+    purchase_save_result = st.session_state.pop("purchase_save_result", None)
+    if purchase_save_result:
+        st.success("買付情報をスプレッドシートに保存しました！")
+        st.info(f"保存先：{purchase_save_result.get('sheet_name', PURCHASE_SHEET_NAME)}")
+        saved_photo_urls = purchase_save_result.get("photo_urls", [])
+        if saved_photo_urls:
+            st.markdown("写真保存先： " + " / ".join(f"[Google Drive]({url})" for url in saved_photo_urls))
+        else:
+            st.write("写真保存先：写真なし")
+
     form_column, photo_column = st.columns([1, 1], gap="large")
 
     with form_column:
@@ -1369,11 +1387,17 @@ with tab3:
                 '<div class="section-title">🖼️ 写真を登録 <span class="pill">最大10枚まで</span></div>',
                 unsafe_allow_html=True
             )
+            if "purchase_photo_uploader_version" not in st.session_state:
+                st.session_state["purchase_photo_uploader_version"] = 0
+
+            purchase_photo_uploader_key = (
+                f"purchase_photos_{st.session_state['purchase_photo_uploader_version']}"
+            )
             purchase_photos = st.file_uploader(
                 "ここに写真をドラッグ＆ドロップ、または写真を選択",
                 type=["jpg", "jpeg", "png", "heic"],
                 accept_multiple_files=True,
-                key="purchase_photos",
+                key=purchase_photo_uploader_key,
                 help="JPG / PNG / HEIC に対応しています"
             )
 
@@ -1453,12 +1477,12 @@ with tab3:
                 with st.spinner("買付情報をスプレッドシートへ保存しています。"):
                     save_purchase_to_sheet(data)
 
-                st.success("買付情報をスプレッドシートに保存しました！")
-                st.info(f"保存先：{PURCHASE_SHEET_NAME}")
-                if saved_photo_urls:
-                    st.markdown("写真保存先： " + " / ".join(f"[Google Drive]({url})" for url in saved_photo_urls))
-                else:
-                    st.write("写真保存先：写真なし")
+                st.session_state["purchase_save_result"] = {
+                    "sheet_name": PURCHASE_SHEET_NAME,
+                    "photo_urls": saved_photo_urls
+                }
+                reset_purchase_form(clear_save_result=False)
+                st.rerun()
 
             except Exception as e:
                 st.error("買付情報の保存でエラーが出ました。")
