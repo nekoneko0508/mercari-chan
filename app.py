@@ -555,8 +555,29 @@ def save_uploaded_purchase_photos(product_id, product_name, uploaded_files):
 
     return saved_file_names, ", ".join(saved_file_urls)
 
+def make_google_sheets_hyperlink(photo_urls_text):
+    """Google Sheetsでクリックできる写真リンク数式を作る。複数枚は1枚目を代表リンクにする。"""
+    if not photo_urls_text:
+        return ""
+
+    if str(photo_urls_text).strip().startswith("=HYPERLINK"):
+        return photo_urls_text
+
+    photo_urls = [
+        url.strip()
+        for url in str(photo_urls_text).replace("\n", ",").split(",")
+        if url.strip()
+    ]
+    if not photo_urls:
+        return ""
+
+    first_url = photo_urls[0].replace('"', '""')
+    label = "写真1" if len(photo_urls) > 1 else "写真を開く"
+    return f'=HYPERLINK("{first_url}","{label}")'
+
 def save_purchase_to_sheet(data):
     worksheet = connect_purchase_sheet()
+    photo_link_formula = make_google_sheets_hyperlink(data.get("photo_file_path", ""))
 
     row = [
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -570,7 +591,7 @@ def save_purchase_to_sheet(data):
         data.get("category", ""),
         data.get("memo", ""),
         data.get("photo_file_name", ""),
-        data.get("photo_file_path", ""),
+        photo_link_formula,
         "買付済み"
     ]
 
@@ -580,10 +601,14 @@ def save_purchase_to_sheet(data):
 
     # 1行目が空の場合は、A1からヘッダーを入れる
     if next_row == 1:
-        worksheet.update("A1:M1", [PURCHASE_HEADERS])
+        worksheet.update(range_name="A1:M1", values=[PURCHASE_HEADERS])
         next_row = 2
 
-    worksheet.update(f"A{next_row}:M{next_row}", [row])
+    worksheet.update(
+        range_name=f"A{next_row}:M{next_row}",
+        values=[row],
+        value_input_option="USER_ENTERED"
+    )
 
 def save_inventory_to_sheet(data):
     worksheet = connect_sheet()
@@ -678,28 +703,46 @@ def get_recent_purchase_rows(limit=3):
     except Exception:
         return fallback_rows
 
-def reset_purchase_form(clear_save_result=True):
-    """買付登録フォームと写真アップロード欄をリセットする。"""
-    keys = [
-        "purchase_buyer_name",
-        "purchase_product_name",
-        "purchase_brand",
-        "purchase_price",
-        "purchase_quantity",
-        "purchase_color",
-        "purchase_size",
-        "purchase_place",
-        "purchase_date",
-        "purchase_category",
-        "purchase_memo"
-    ]
-    for key in keys:
-        if key in st.session_state:
+PURCHASE_FORM_FIELD_KEYS = [
+    "buyer_name",
+    "product_name",
+    "brand",
+    "price",
+    "quantity",
+    "color",
+    "size",
+    "place",
+    "date",
+    "category",
+    "memo"
+]
+
+def get_purchase_form_key(field_name):
+    version = st.session_state.get("purchase_form_version", 0)
+    return f"purchase_form_{version}_{field_name}"
+
+def cleanup_old_purchase_form_keys():
+    """リセット後に、古いバージョンの入力値と写真アップロード値を消す。"""
+    current_form_prefix = f"purchase_form_{st.session_state.get('purchase_form_version', 0)}_"
+    current_photo_key = f"purchase_photos_{st.session_state.get('purchase_photo_uploader_version', 0)}"
+
+    for key in list(st.session_state.keys()):
+        key_text = str(key)
+        if key_text.startswith("purchase_form_") and key_text != "purchase_form_version":
+            if not key_text.startswith(current_form_prefix):
+                del st.session_state[key]
+        elif key_text.startswith("purchase_photos_") and key_text != current_photo_key:
             del st.session_state[key]
 
+def reset_purchase_form(clear_save_result=True):
+    """買付登録フォームと写真アップロード欄を次の空フォームに切り替える。"""
+    st.session_state["purchase_form_version"] = (
+        st.session_state.get("purchase_form_version", 0) + 1
+    )
     st.session_state["purchase_photo_uploader_version"] = (
         st.session_state.get("purchase_photo_uploader_version", 0) + 1
     )
+    st.session_state["purchase_form_needs_cleanup"] = True
 
     if clear_save_result and "purchase_save_result" in st.session_state:
         del st.session_state["purchase_save_result"]
@@ -1286,6 +1329,25 @@ with tab3:
         else:
             st.write("写真保存先：写真なし")
 
+    if "purchase_form_version" not in st.session_state:
+        st.session_state["purchase_form_version"] = 0
+    if "purchase_photo_uploader_version" not in st.session_state:
+        st.session_state["purchase_photo_uploader_version"] = 0
+    if st.session_state.pop("purchase_form_needs_cleanup", False):
+        cleanup_old_purchase_form_keys()
+
+    purchase_buyer_name_key = get_purchase_form_key("buyer_name")
+    purchase_product_name_key = get_purchase_form_key("product_name")
+    purchase_brand_key = get_purchase_form_key("brand")
+    purchase_price_key = get_purchase_form_key("price")
+    purchase_quantity_key = get_purchase_form_key("quantity")
+    purchase_color_key = get_purchase_form_key("color")
+    purchase_size_key = get_purchase_form_key("size")
+    purchase_place_key = get_purchase_form_key("place")
+    purchase_date_key = get_purchase_form_key("date")
+    purchase_category_key = get_purchase_form_key("category")
+    purchase_memo_key = get_purchase_form_key("memo")
+
     form_column, photo_column = st.columns([1, 1], gap="large")
 
     with form_column:
@@ -1295,7 +1357,7 @@ with tab3:
             buyer_name = st.text_input(
                 "登録者名",
                 placeholder="例）山田",
-                key="purchase_buyer_name"
+                key=purchase_buyer_name_key
             )
 
             first_row_left, first_row_right = st.columns(2)
@@ -1303,13 +1365,13 @@ with tab3:
                 purchase_product_name = st.text_input(
                     "商品名（必須）",
                     placeholder="例）花柄ワンピース",
-                    key="purchase_product_name"
+                    key=purchase_product_name_key
                 )
             with first_row_right:
                 purchase_brand = st.text_input(
                     "ブランド",
                     placeholder="例）ZARA",
-                    key="purchase_brand"
+                    key=purchase_brand_key
                 )
 
             second_row_left, second_row_right = st.columns(2)
@@ -1319,7 +1381,7 @@ with tab3:
                     min_value=0,
                     step=100,
                     format="%d",
-                    key="purchase_price",
+                    key=purchase_price_key,
                     help="円単位で入力してください"
                 )
             with second_row_right:
@@ -1328,7 +1390,7 @@ with tab3:
                     min_value=1,
                     step=1,
                     value=1,
-                    key="purchase_quantity"
+                    key=purchase_quantity_key
                 )
 
             third_row_left, third_row_right = st.columns(2)
@@ -1336,13 +1398,13 @@ with tab3:
                 purchase_color = st.text_input(
                     "色",
                     placeholder="例）ネイビー",
-                    key="purchase_color"
+                    key=purchase_color_key
                 )
             with third_row_right:
                 purchase_size = st.text_input(
                     "サイズ",
                     placeholder="例）M",
-                    key="purchase_size"
+                    key=purchase_size_key
                 )
 
             fourth_row_left, fourth_row_right = st.columns(2)
@@ -1350,24 +1412,24 @@ with tab3:
                 purchase_place = st.text_input(
                     "仕入れ先",
                     placeholder="例）ハワイ・アラモアナセンター",
-                    key="purchase_place"
+                    key=purchase_place_key
                 )
             with fourth_row_right:
                 purchase_date = st.date_input(
                     "仕入れ日",
                     value=date.today(),
-                    key="purchase_date"
+                    key=purchase_date_key
                 )
 
             purchase_category = st.text_input(
                 "カテゴリ",
                 placeholder="例）レディース ワンピース",
-                key="purchase_category"
+                key=purchase_category_key
             )
             purchase_memo = st.text_area(
                 "メモ（任意）",
                 placeholder="商品の状態・特徴・気づいたことなどをメモできます",
-                key="purchase_memo",
+                key=purchase_memo_key,
                 height=110
             )
 
@@ -1387,9 +1449,6 @@ with tab3:
                 '<div class="section-title">🖼️ 写真を登録 <span class="pill">最大10枚まで</span></div>',
                 unsafe_allow_html=True
             )
-            if "purchase_photo_uploader_version" not in st.session_state:
-                st.session_state["purchase_photo_uploader_version"] = 0
-
             purchase_photo_uploader_key = (
                 f"purchase_photos_{st.session_state['purchase_photo_uploader_version']}"
             )
