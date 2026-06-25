@@ -20,6 +20,7 @@ SPREADSHEET_ID = "1q08itPY88CzG0yrQschTAMNRcVqy5-RwEASl4GkZor0"
 WORKSHEET_NAME = "メルカリちゃん在庫"
 DESCRIPTION_SHEET_NAME = "商品説明ログ"
 PURCHASE_SHEET_NAME = "買付登録"
+SALES_SHEET_NAME = "売上管理"
 SERVICE_ACCOUNT_FILE = "service_account.json"
 DRIVE_FOLDER_ID = "1gNzzHYcjQcO7emNLWAQph9c8hIw-aXXG"
 APPS_SCRIPT_PHOTO_URL = "https://script.google.com/macros/s/AKfycbzCY9tsIZuSqbVMyCuTZvhwYrRLXwvEzVYqcA2kiCtQZ_aqHskn9OfaylmGsgmbtNpT/exec"
@@ -100,6 +101,23 @@ PURCHASE_HEADERS = [
     "買付ステータス"
 ]
 
+SALES_HEADERS = [
+    "登録日時",
+    "商品ID",
+    "商品名",
+    "販売日",
+    "販売価格",
+    "仕入価格",
+    "メルカリ手数料",
+    "送料",
+    "梱包資材費",
+    "利益",
+    "利益率",
+    "販売先",
+    "在庫更新",
+    "メモ"
+]
+
 def get_credentials():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -168,6 +186,9 @@ def connect_description_sheet():
 
 def connect_purchase_sheet():
     return get_or_create_worksheet(PURCHASE_SHEET_NAME, PURCHASE_HEADERS)
+
+def connect_sales_sheet():
+    return get_or_create_worksheet(SALES_SHEET_NAME, SALES_HEADERS)
 
 def generate_product_id():
     return "MC-" + uuid.uuid4().hex[:8].upper()
@@ -659,6 +680,115 @@ def update_inventory_price_suggestions(row_number, data):
     ]
     worksheet.update(f"S{row_number}:W{row_number}", [row])
 
+def parse_yen_value(value):
+    if value in (None, ""):
+        return 0
+
+    text = str(value).replace("¥", "").replace(",", "").strip()
+    try:
+        return int(float(text))
+    except Exception:
+        return 0
+
+def format_yen(value):
+    return f"¥{int(value):,}"
+
+def format_profit_rate(profit_rate):
+    return f"{profit_rate:.1%}" if profit_rate else "0.0%"
+
+def calculate_sales_values(sale_price, purchase_price, shipping_fee, packing_fee):
+    mercari_fee = int(sale_price * 0.10)
+    profit = sale_price - purchase_price - mercari_fee - shipping_fee - packing_fee
+    profit_rate = profit / sale_price if sale_price else 0
+    return mercari_fee, profit, profit_rate
+
+def get_available_inventory_items():
+    worksheet = connect_sheet()
+    rows = worksheet.get_all_values()
+    items = []
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        values = row + [""] * max(0, len(HEADERS) - len(row))
+        if values[13] != "在庫あり":
+            continue
+
+        items.append(
+            {
+                "row_number": row_number,
+                "product_id": values[0],
+                "product_name": values[3],
+                "purchase_price": parse_yen_value(values[5]),
+                "planned_price": parse_yen_value(values[6])
+            }
+        )
+
+    return items
+
+def save_sales_registration(item, sale_date, sale_price, shipping_fee, packing_fee, sales_channel, memo):
+    sales_sheet = connect_sales_sheet()
+    inventory_sheet = connect_sheet()
+    mercari_fee, profit, profit_rate = calculate_sales_values(
+        sale_price,
+        item["purchase_price"],
+        shipping_fee,
+        packing_fee
+    )
+    profit_rate_text = format_profit_rate(profit_rate)
+
+    sales_row = [
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        item["product_id"],
+        item["product_name"],
+        str(sale_date),
+        sale_price,
+        item["purchase_price"],
+        mercari_fee,
+        shipping_fee,
+        packing_fee,
+        profit,
+        profit_rate_text,
+        sales_channel,
+        "売約済み更新済み",
+        memo
+    ]
+
+    sales_values = sales_sheet.get_all_values()
+    sales_next_row = len(sales_values) + 1
+    if sales_next_row == 1:
+        sales_sheet.update(range_name="A1:N1", values=[SALES_HEADERS])
+        sales_next_row = 2
+
+    sales_sheet.update(
+        range_name=f"A{sales_next_row}:N{sales_next_row}",
+        values=[sales_row],
+        value_input_option="USER_ENTERED"
+    )
+
+    inventory_update_row = [
+        sale_price,
+        mercari_fee,
+        shipping_fee,
+        packing_fee,
+        profit,
+        profit_rate_text,
+        "売約済み",
+        str(sale_date),
+        memo
+    ]
+    inventory_sheet.update(
+        range_name=f"H{item['row_number']}:P{item['row_number']}",
+        values=[inventory_update_row],
+        value_input_option="USER_ENTERED"
+    )
+
+    return {
+        "mercari_fee": mercari_fee,
+        "profit": profit,
+        "profit_rate": profit_rate_text,
+        "sales_row": sales_next_row,
+        "inventory_row": item["row_number"]
+    }
+
 def get_recent_purchase_rows(limit=3):
     """買付登録シートの直近データを表示用に整える。失敗時は画面を止めず仮データにする。"""
     fallback_rows = [
@@ -1095,10 +1225,11 @@ st.markdown(
 
 st.divider()
 
-tab3, tab2, tab1, tab4, tab5 = st.tabs([
+tab3, tab2, tab1, tab6, tab4, tab5 = st.tabs([
     "買付登録",
     "AI出品サポート",
     "在庫登録",
+    "売上登録",
     "買付・AI出品登録",
     "使い方ガイド"
 ])
@@ -1796,6 +1927,93 @@ with tab4:
         st.write("高めに売る価格：", saved.get("premium_price", ""))
         st.write("おすすめ販売価格：", saved.get("recommended_price", ""))
         st.write("価格理由：", saved.get("price_reason", ""))
+
+with tab6:
+    st.subheader("売上登録")
+    st.write("在庫ありの商品を選び、売上登録と在庫更新をまとめて行います。")
+
+    try:
+        available_items = get_available_inventory_items()
+    except FileNotFoundError:
+        available_items = []
+        st.error("service_account.json が見つかりません。mercari-chan フォルダに入れてください。")
+    except Exception as e:
+        available_items = []
+        st.error("在庫商品の取得でエラーが出ました。")
+        st.write(e)
+
+    if not available_items:
+        st.info("登録できる在庫がありません。")
+    else:
+        selected_item = st.selectbox(
+            "売上登録する商品",
+            options=available_items,
+            format_func=lambda item: (
+                f"{item['product_id']}｜{item['product_name']}｜"
+                f"仕入 {format_yen(item['purchase_price'])}｜予定 {format_yen(item['planned_price'])}"
+            )
+        )
+
+        st.write("### 売上情報")
+        sales_col1, sales_col2, sales_col3 = st.columns(3)
+        with sales_col1:
+            sale_date = st.date_input("販売日", value=date.today(), key="sales_sale_date")
+        with sales_col2:
+            sale_price = st.number_input(
+                "販売価格",
+                min_value=0,
+                step=100,
+                value=selected_item["planned_price"],
+                key=f"sales_sale_price_{selected_item['row_number']}"
+            )
+        with sales_col3:
+            sales_channel = st.text_input("販売先", value="メルカリ", key="sales_channel")
+
+        cost_col1, cost_col2 = st.columns(2)
+        with cost_col1:
+            shipping_fee = st.number_input("送料", min_value=0, step=100, key="sales_shipping_fee")
+        with cost_col2:
+            packing_fee = st.number_input("梱包資材費", min_value=0, step=10, key="sales_packing_fee")
+
+        sales_memo = st.text_area("メモ", key="sales_memo")
+
+        mercari_fee, profit, profit_rate = calculate_sales_values(
+            sale_price,
+            selected_item["purchase_price"],
+            shipping_fee,
+            packing_fee
+        )
+
+        result_col1, result_col2, result_col3 = st.columns(3)
+        with result_col1:
+            st.metric("メルカリ手数料", format_yen(mercari_fee))
+        with result_col2:
+            st.metric("利益", format_yen(profit))
+        with result_col3:
+            st.metric("利益率", format_profit_rate(profit_rate))
+
+        if st.button("売上を保存して在庫を更新する", type="primary", use_container_width=True):
+            if sale_price <= 0:
+                st.error("販売価格を入力してください。")
+            else:
+                try:
+                    result = save_sales_registration(
+                        selected_item,
+                        sale_date,
+                        sale_price,
+                        shipping_fee,
+                        packing_fee,
+                        sales_channel,
+                        sales_memo
+                    )
+                    st.success("売上管理への保存と在庫更新が完了しました！")
+                    st.info(f"売上管理シート 行番号：{result['sales_row']}")
+                    st.info(f"在庫シート 行番号：{result['inventory_row']} を売約済みに更新しました。")
+                    st.write("利益：", format_yen(result["profit"]))
+                    st.write("利益率：", result["profit_rate"])
+                except Exception as e:
+                    st.error("売上登録または在庫更新でエラーが出ました。")
+                    st.write(e)
 
 with tab5:
     st.subheader("使い方ガイド")
