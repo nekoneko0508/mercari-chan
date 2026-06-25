@@ -7,3 +7,5 @@ openai
 pillow
 google-api-python-client
 requests
+fastapi
+uvicorn
