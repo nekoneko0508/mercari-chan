@@ -2319,3 +2319,60 @@ with tab5:
             st.write("- 写真保存でエラーが出る場合は、Apps Script URLと保存トークンを確認してください。")
             st.write("- スプレッドシート保存でエラーが出る場合は、サービスアカウントの権限を確認してください。")
             st.write("- LINEから開いた場合も、まず買付登録タブから登録できます。")
+
+    st.write("### 2026/06/25 更新：売上登録・メルカリ購入メールから登録")
+
+    update_col1, update_col2 = st.columns(2)
+
+    with update_col1:
+        with st.container(border=True):
+            st.write("### 売上登録の使い方")
+            st.write("- 売上登録タブを開きます。")
+            st.write("- 売れた商品を在庫一覧から選びます。")
+            st.write("- 販売日、販売価格、送料、梱包資材費を入力します。")
+            st.write("- メルカリ手数料、利益、利益率を確認します。")
+            st.write("- 保存ボタンを押します。")
+            st.write("- 売上管理シートに保存されます。")
+            st.write("- メルカリちゃん在庫シートの在庫状況が「売約済み」になります。")
+
+        with st.container(border=True):
+            st.write("### メルカリ購入メールから登録")
+            st.write("- メルカリの購入通知メール本文をコピーします。")
+            st.write("- 売上登録タブの「メルカリ購入メールから登録」に貼り付けます。")
+            st.write("- 「メール内容を読み取る」を押します。")
+            st.write("- 購入者名、メルカリ商品ID、商品名、販売価格が自動で入ります。")
+            st.write("- 売約済みにする在庫商品を選びます。")
+            st.write("- 送料、梱包資材費、販売日を入力します。")
+            st.write("- 利益計算を確認して、保存ボタンを押します。")
+
+    with update_col2:
+        with st.container(border=True):
+            st.write("### まとめ商品の場合")
+            st.write("- 商品名に「まとめ商品」「リクエスト」「2点」「3点」「複数」が含まれる場合は注意表示が出ます。")
+            st.write("- まとめ商品の場合は複数の在庫を選べます。")
+            st.write("- 売上金額と利益は売上管理シートに1行で記録します。")
+            st.write("- 選択した在庫はすべて「売約済み」になります。")
+
+        with st.container(border=True):
+            st.write("### 利益計算")
+            st.write("- メルカリ手数料 = 販売価格 × 10%")
+            st.write("- 利益 = 販売価格 - 仕入価格 - メルカリ手数料 - 送料 - 梱包資材費")
+            st.write("- 利益率 = 利益 ÷ 販売価格")
+
+        with st.container(border=True):
+            st.write("### 現在できる流れ")
+            st.write("買付登録")
+            st.write("↓")
+            st.write("写真保存")
+            st.write("↓")
+            st.write("AI出品文作成")
+            st.write("↓")
+            st.write("在庫登録")
+            st.write("↓")
+            st.write("売上登録")
+            st.write("↓")
+            st.write("メルカリ購入メールから売上登録")
+            st.write("↓")
+            st.write("利益計算")
+            st.write("↓")
+            st.write("在庫を売約済みに更新")
