@@ -23,7 +23,12 @@ DESCRIPTION_SHEET_NAME = "商品説明ログ"
 PURCHASE_SHEET_NAME = "買付登録"
 SALES_SHEET_NAME = "売上管理"
 LINE_JUDGE_SHEET_NAME = "LINE買付ジャッジ状態"
-SERVICE_ACCOUNT_FILE = "service_account.json"
+RENDER_SERVICE_ACCOUNT_FILE = "/etc/secrets/service_account.json"
+SERVICE_ACCOUNT_FILE = (
+    RENDER_SERVICE_ACCOUNT_FILE
+    if os.path.exists(RENDER_SERVICE_ACCOUNT_FILE)
+    else "service_account.json"
+)
 DRIVE_FOLDER_ID = "1gNzzHYcjQcO7emNLWAQph9c8hIw-aXXG"
 APPS_SCRIPT_PHOTO_URL = "https://script.google.com/macros/s/AKfycbzCY9tsIZuSqbVMyCuTZvhwYrRLXwvEzVYqcA2kiCtQZ_aqHskn9OfaylmGsgmbtNpT/exec"
 PHOTO_SAVE_TOKEN = "mercari-chan-photo-save"
@@ -136,7 +141,7 @@ def get_credentials():
         "https://www.googleapis.com/auth/drive"
     ]
 
-    # ローカルでは service_account.json、公開版では Streamlit Secrets から読む
+    # ローカルでは service_account.json、RenderではSecret File、Streamlit CloudではSecretsから読む
     try:
         if "gcp_service_account" in st.secrets:
             return Credentials.from_service_account_info(
@@ -1717,7 +1722,7 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
                     st.info(f"保存先：{WORKSHEET_NAME}")
 
                 except FileNotFoundError:
-                    st.error("service_account.json が見つかりません。mercari-chan フォルダに入れてください。")
+                    st.error(f"Google認証ファイルが見つかりません。参照先：{SERVICE_ACCOUNT_FILE}")
                 except Exception as e:
                     st.error("エラーが発生しました。")
                     st.write(e)
@@ -2370,7 +2375,7 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
             available_items = get_available_inventory_items()
         except FileNotFoundError:
             available_items = []
-            st.error("service_account.json が見つかりません。mercari-chan フォルダに入れてください。")
+            st.error(f"Google認証ファイルが見つかりません。参照先：{SERVICE_ACCOUNT_FILE}")
         except Exception as e:
             available_items = []
             st.error("在庫商品の取得でエラーが出ました。")
