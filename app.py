@@ -1225,13 +1225,13 @@ st.markdown(
 
 st.divider()
 
-tab3, tab2, tab1, tab6, tab4, tab5 = st.tabs([
-    "買付登録",
-    "AI出品サポート",
+tab4, tab1, tab6, tab5, tab3, tab2 = st.tabs([
+    "買付・AI出品登録",
     "在庫登録",
     "売上登録",
-    "買付・AI出品登録",
-    "使い方ガイド"
+    "使い方ガイド",
+    "買付登録",
+    "AI出品サポート"
 ])
 
 with tab1:
