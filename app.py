@@ -3,6 +3,7 @@ import json
 import uuid
 import base64
 import io
+import re
 from datetime import date, datetime
 import requests
 
@@ -702,6 +703,29 @@ def calculate_sales_values(sale_price, purchase_price, shipping_fee, packing_fee
     profit_rate = profit / sale_price if sale_price else 0
     return mercari_fee, profit, profit_rate
 
+def parse_mercari_purchase_email(email_text):
+    text = str(email_text or "")
+
+    buyer_match = re.search(r"下記の商品を\s*(.+?さん)が購入しました", text)
+    item_id_match = re.search(r"商品ID\s*[:：]\s*([A-Za-z0-9_-]+)", text)
+    item_name_match = re.search(r"商品名\s*[:：]\s*(.+)", text)
+    price_match = re.search(r"商品価格\s*[:：]\s*([\d,]+)\s*円?", text)
+
+    sale_price = 0
+    if price_match:
+        sale_price = parse_yen_value(price_match.group(1))
+
+    return {
+        "buyer_name": buyer_match.group(1).strip() if buyer_match else "",
+        "mercari_item_id": item_id_match.group(1).strip() if item_id_match else "",
+        "item_name": item_name_match.group(1).strip() if item_name_match else "",
+        "sale_price": sale_price
+    }
+
+def is_bundle_item_name(item_name):
+    bundle_keywords = ["まとめ商品", "リクエスト", "2点", "3点", "複数"]
+    return any(keyword in str(item_name or "") for keyword in bundle_keywords)
+
 def get_available_inventory_items():
     worksheet = connect_sheet()
     rows = worksheet.get_all_values()
@@ -787,6 +811,102 @@ def save_sales_registration(item, sale_date, sale_price, shipping_fee, packing_f
         "profit_rate": profit_rate_text,
         "sales_row": sales_next_row,
         "inventory_row": item["row_number"]
+    }
+
+def save_mercari_email_sales_registration(
+    selected_items,
+    parsed_email,
+    sale_date,
+    sale_price,
+    shipping_fee,
+    packing_fee,
+    user_memo
+):
+    if not selected_items:
+        raise ValueError("在庫商品が選択されていません。")
+
+    sales_sheet = connect_sales_sheet()
+    inventory_sheet = connect_sheet()
+
+    purchase_price_total = sum(item["purchase_price"] for item in selected_items)
+    mercari_fee, profit, profit_rate = calculate_sales_values(
+        sale_price,
+        purchase_price_total,
+        shipping_fee,
+        packing_fee
+    )
+    profit_rate_text = format_profit_rate(profit_rate)
+    product_ids = ", ".join(item["product_id"] for item in selected_items)
+    memo = (
+        f"メルカリ商品ID：{parsed_email.get('mercari_item_id', '')}"
+        f"／購入者：{parsed_email.get('buyer_name', '')}"
+        f"／メール商品名：{parsed_email.get('item_name', '')}"
+    )
+    if user_memo:
+        memo += f"／売上登録メモ：{user_memo}"
+
+    sales_row = [
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        product_ids,
+        parsed_email.get("item_name", ""),
+        str(sale_date),
+        sale_price,
+        purchase_price_total,
+        mercari_fee,
+        shipping_fee,
+        packing_fee,
+        profit,
+        profit_rate_text,
+        "メルカリ",
+        "売約済み更新済み",
+        memo
+    ]
+
+    sales_values = sales_sheet.get_all_values()
+    sales_next_row = len(sales_values) + 1
+    if sales_next_row == 1:
+        sales_sheet.update(range_name="A1:N1", values=[SALES_HEADERS])
+        sales_next_row = 2
+
+    sales_sheet.update(
+        range_name=f"A{sales_next_row}:N{sales_next_row}",
+        values=[sales_row],
+        value_input_option="USER_ENTERED"
+    )
+
+    if len(selected_items) == 1:
+        item = selected_items[0]
+        inventory_update_row = [
+            sale_price,
+            mercari_fee,
+            shipping_fee,
+            packing_fee,
+            profit,
+            profit_rate_text,
+            "売約済み",
+            str(sale_date),
+            memo
+        ]
+        inventory_sheet.update(
+            range_name=f"H{item['row_number']}:P{item['row_number']}",
+            values=[inventory_update_row],
+            value_input_option="USER_ENTERED"
+        )
+    else:
+        for item in selected_items:
+            inventory_sheet.update(
+                range_name=f"N{item['row_number']}:P{item['row_number']}",
+                values=[["売約済み", str(sale_date), memo]],
+                value_input_option="USER_ENTERED"
+            )
+
+    return {
+        "mercari_fee": mercari_fee,
+        "profit": profit,
+        "profit_rate": profit_rate_text,
+        "sales_row": sales_next_row,
+        "inventory_rows": [item["row_number"] for item in selected_items],
+        "purchase_price_total": purchase_price_total
     }
 
 def get_recent_purchase_rows(limit=3):
@@ -1941,6 +2061,163 @@ with tab6:
         available_items = []
         st.error("在庫商品の取得でエラーが出ました。")
         st.write(e)
+
+    with st.expander("メルカリ購入メールから登録", expanded=True):
+        mercari_email_text = st.text_area(
+            "メルカリ購入通知メール本文を貼り付け",
+            height=220,
+            key="mercari_purchase_email_text"
+        )
+
+        if st.button("メール内容を読み取る", key="parse_mercari_purchase_email_button"):
+            if not mercari_email_text.strip():
+                if "parsed_mercari_purchase_email" in st.session_state:
+                    del st.session_state["parsed_mercari_purchase_email"]
+                st.error("メール本文を貼り付けてください。")
+            else:
+                parsed_email = parse_mercari_purchase_email(mercari_email_text)
+                st.session_state["parsed_mercari_purchase_email"] = parsed_email
+
+        parsed_email = st.session_state.get("parsed_mercari_purchase_email")
+        if parsed_email:
+            missing_items = []
+            if not parsed_email.get("buyer_name"):
+                missing_items.append("購入者名")
+            if not parsed_email.get("mercari_item_id"):
+                missing_items.append("メルカリ商品ID")
+            if not parsed_email.get("item_name"):
+                missing_items.append("商品名")
+            if not parsed_email.get("sale_price"):
+                missing_items.append("販売価格")
+
+            st.write("### 抽出結果")
+            result_col1, result_col2 = st.columns(2)
+            with result_col1:
+                st.write("購入者名：", parsed_email.get("buyer_name") or "未取得")
+                st.write("メルカリ商品ID：", parsed_email.get("mercari_item_id") or "未取得")
+            with result_col2:
+                st.write("商品名：", parsed_email.get("item_name") or "未取得")
+                st.write("販売価格：", format_yen(parsed_email.get("sale_price", 0)))
+
+            if missing_items:
+                st.error("抽出できない項目があります：" + "、".join(missing_items))
+
+            is_bundle = is_bundle_item_name(parsed_email.get("item_name", ""))
+            if is_bundle:
+                st.warning("まとめ商品の可能性があります。売約済みにする在庫商品を複数選択してください。")
+
+            if not available_items:
+                st.info("登録できる在庫がありません。")
+            else:
+                item_label = lambda item: (
+                    f"{item['product_id']}｜{item['product_name']}｜"
+                    f"仕入 {format_yen(item['purchase_price'])}｜予定 {format_yen(item['planned_price'])}"
+                )
+
+                if is_bundle:
+                    selected_email_items = st.multiselect(
+                        "売約済みにする在庫商品",
+                        options=available_items,
+                        format_func=item_label,
+                        key="email_sales_selected_items"
+                    )
+                else:
+                    selected_email_item = st.selectbox(
+                        "売約済みにする在庫商品",
+                        options=available_items,
+                        format_func=item_label,
+                        key="email_sales_selected_item"
+                    )
+                    selected_email_items = [selected_email_item] if selected_email_item else []
+
+                email_sale_col1, email_sale_col2, email_sale_col3 = st.columns(3)
+                with email_sale_col1:
+                    email_sale_date = st.date_input(
+                        "販売日",
+                        value=date.today(),
+                        key="email_sales_sale_date"
+                    )
+                with email_sale_col2:
+                    email_sale_price = st.number_input(
+                        "販売価格",
+                        min_value=0,
+                        step=100,
+                        value=int(parsed_email.get("sale_price", 0)),
+                        key=f"email_sales_sale_price_{parsed_email.get('mercari_item_id', 'unknown')}"
+                    )
+                with email_sale_col3:
+                    st.text_input("販売先", value="メルカリ", disabled=True, key="email_sales_channel_display")
+
+                email_cost_col1, email_cost_col2 = st.columns(2)
+                with email_cost_col1:
+                    email_shipping_fee = st.number_input(
+                        "送料",
+                        min_value=0,
+                        step=100,
+                        key="email_sales_shipping_fee"
+                    )
+                with email_cost_col2:
+                    email_packing_fee = st.number_input(
+                        "梱包資材費",
+                        min_value=0,
+                        step=10,
+                        key="email_sales_packing_fee"
+                    )
+
+                email_sales_memo = st.text_area("メモ", key="email_sales_memo")
+                purchase_price_total = sum(item["purchase_price"] for item in selected_email_items)
+                email_mercari_fee, email_profit, email_profit_rate = calculate_sales_values(
+                    email_sale_price,
+                    purchase_price_total,
+                    email_shipping_fee,
+                    email_packing_fee
+                )
+
+                email_calc_col1, email_calc_col2, email_calc_col3, email_calc_col4 = st.columns(4)
+                with email_calc_col1:
+                    st.metric("仕入価格合計", format_yen(purchase_price_total))
+                with email_calc_col2:
+                    st.metric("メルカリ手数料", format_yen(email_mercari_fee))
+                with email_calc_col3:
+                    st.metric("利益", format_yen(email_profit))
+                with email_calc_col4:
+                    st.metric("利益率", format_profit_rate(email_profit_rate))
+
+                if st.button(
+                    "メール内容から売上登録して在庫を売約済みにする",
+                    type="primary",
+                    use_container_width=True,
+                    key="save_email_sales_button"
+                ):
+                    if missing_items:
+                        st.error("抽出できない項目があるため保存できません。")
+                    elif not selected_email_items:
+                        st.error("在庫商品を選択してください。")
+                    elif email_sale_price <= 0:
+                        st.error("販売価格を入力してください。")
+                    else:
+                        try:
+                            result = save_mercari_email_sales_registration(
+                                selected_email_items,
+                                parsed_email,
+                                email_sale_date,
+                                email_sale_price,
+                                email_shipping_fee,
+                                email_packing_fee,
+                                email_sales_memo
+                            )
+                            st.success("メール内容から売上登録し、在庫を売約済みに更新しました！")
+                            st.info(f"売上管理シート 行番号：{result['sales_row']}")
+                            st.info(
+                                "在庫シート 行番号："
+                                + ", ".join(str(row_number) for row_number in result["inventory_rows"])
+                                + " を売約済みに更新しました。"
+                            )
+                            st.write("利益：", format_yen(result["profit"]))
+                            st.write("利益率：", result["profit_rate"])
+                        except Exception as e:
+                            st.error("メール内容からの売上登録でエラーが出ました。")
+                            st.write(e)
 
     if not available_items:
         st.info("登録できる在庫がありません。")
