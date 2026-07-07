@@ -222,6 +222,17 @@ def connect_line_judge_sheet():
 def generate_product_id():
     return "MC-" + uuid.uuid4().hex[:8].upper()
 
+def reset_inventory_registration_form():
+    st.session_state["reg_product_name"] = ""
+    st.session_state["reg_category"] = ""
+    st.session_state["reg_purchase_price"] = 0
+    st.session_state["reg_purchase_date"] = date.today()
+    st.session_state["reg_planned_price"] = 0
+    st.session_state["reg_shipping_fee"] = 0
+    st.session_state["reg_packing_fee"] = 0
+    st.session_state["reg_memo"] = ""
+    st.session_state["reg_stock_quantity"] = 1
+
 def clean_json_text(text):
     text = text.strip()
     text = text.replace("```json", "").replace("```", "").strip()
@@ -1695,6 +1706,14 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
     with tab1:
         st.subheader("商品登録")
 
+        if st.session_state.pop("reset_inventory_registration_form", False):
+            reset_inventory_registration_form()
+
+        registration_success_message = st.session_state.pop("inventory_registration_success_message", "")
+        if registration_success_message:
+            st.success(registration_success_message)
+            st.info(f"保存先：{WORKSHEET_NAME}")
+
         product_name = st.text_input("商品名", key="reg_product_name")
         category = st.text_input("カテゴリ", key="reg_category")
         purchase_price = st.number_input("仕入れ価格", min_value=0, step=100, key="reg_purchase_price")
@@ -1757,8 +1776,11 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
 
                     worksheet.append_row(row)
 
-                    st.success(f"スプレッドシートに商品を登録しました！ 在庫数：{stock_quantity}")
-                    st.info(f"保存先：{WORKSHEET_NAME}")
+                    st.session_state["inventory_registration_success_message"] = (
+                        f"スプレッドシートに商品を登録しました！ 在庫数：{stock_quantity}"
+                    )
+                    st.session_state["reset_inventory_registration_form"] = True
+                    st.rerun()
 
                 except FileNotFoundError:
                     st.error(f"Google認証ファイルが見つかりません。参照先：{SERVICE_ACCOUNT_FILE}")
