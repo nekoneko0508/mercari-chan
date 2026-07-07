@@ -66,7 +66,16 @@ HEADERS = [
     "標準価格",
     "高めに売る価格",
     "おすすめ販売価格",
-    "価格理由"
+    "価格理由",
+    "",
+    "販売先",
+    "メルカリ商品ID",
+    "メルカリ内プール売上金",
+    "銀行入金状況",
+    "freee登録状況",
+    "仕入原価紐づけ状況",
+    "発送状況",
+    "在庫数"
 ]
 
 DESCRIPTION_HEADERS = [
@@ -677,12 +686,22 @@ def save_inventory_to_sheet(data):
         data.get("standard_price", ""),
         data.get("premium_price", ""),
         data.get("recommended_price", ""),
-        data.get("price_reason", "")
+        data.get("price_reason", ""),
+        "",
+        data.get("sales_channel", ""),
+        data.get("mercari_item_id", ""),
+        data.get("mercari_pool_sales", ""),
+        data.get("bank_deposit_status", ""),
+        data.get("freee_registration_status", ""),
+        data.get("purchase_cost_link_status", ""),
+        data.get("shipping_status", ""),
+        data.get("stock_quantity", "")
     ]
 
     all_values = worksheet.get_all_values()
     next_row = len(all_values) + 1
-    worksheet.update(f"A{next_row}:W{next_row}", [row])
+    end_column = column_number_to_letter(len(HEADERS))
+    worksheet.update(f"A{next_row}:{end_column}{next_row}", [row])
     return next_row
 
 def update_inventory_description(row_number, description):
@@ -1681,6 +1700,13 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
         purchase_price = st.number_input("仕入れ価格", min_value=0, step=100, key="reg_purchase_price")
         purchase_date = st.date_input("仕入日", value=date.today(), key="reg_purchase_date")
         planned_price = st.number_input("予定販売価格", min_value=0, step=100, key="reg_planned_price")
+        stock_quantity = st.number_input(
+            "在庫数",
+            min_value=1,
+            step=1,
+            value=1,
+            key="reg_stock_quantity"
+        )
         shipping_fee = st.number_input("送料", min_value=0, step=100, key="reg_shipping_fee")
         packing_fee = st.number_input("梱包資材費", min_value=0, step=10, key="reg_packing_fee")
         memo = st.text_area("メモ", key="reg_memo")
@@ -1713,12 +1739,25 @@ if os.getenv("MERCARI_WEBHOOK_IMPORT") != "1":
                         "",
                         memo,
                         "",
-                        ""
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        stock_quantity
                     ]
 
                     worksheet.append_row(row)
 
-                    st.success("スプレッドシートに商品を登録しました！")
+                    st.success(f"スプレッドシートに商品を登録しました！ 在庫数：{stock_quantity}")
                     st.info(f"保存先：{WORKSHEET_NAME}")
 
                 except FileNotFoundError:
