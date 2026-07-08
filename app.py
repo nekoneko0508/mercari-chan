@@ -1350,6 +1350,14 @@ LINE_PURCHASE_JUDGE_START_TEXTS = [
     "仕入れ判断",
     "仕入判断",
     "ジャッジ",
+    "次の商品",
+    "新規",
+]
+
+LINE_PURCHASE_JUDGE_CANCEL_TEXTS = [
+    "キャンセル",
+    "やめる",
+    "終了",
 ]
 
 LINE_PURCHASE_JUDGE_START_REPLY = """買付ジャッジを開始します。
@@ -1369,6 +1377,9 @@ def is_line_purchase_judge_start_text(text):
         normalized_text in LINE_PURCHASE_JUDGE_START_TEXTS
         or "買付ジャッジ" in normalized_text
     )
+
+def is_line_purchase_judge_cancel_text(text):
+    return normalize_line_text(text) in LINE_PURCHASE_JUDGE_CANCEL_TEXTS
 
 def sanitize_line_purchase_reply(reply_text):
     hidden_prefixes = [
@@ -1405,7 +1416,19 @@ def build_line_purchase_features_for_judge(features, price_text):
         ])
     return price_text
 
-def judge_line_purchase(features, price_info):
+def build_additional_photo_features(existing_features, additional_features):
+    existing_text = str(existing_features or "").strip()
+    additional_text = str(additional_features or "").strip()
+    if existing_text and additional_text:
+        return "\n".join([
+            existing_text,
+            "",
+            "【追加写真の解析結果】",
+            additional_text,
+        ])
+    return additional_text or existing_text
+
+def judge_line_purchase(features, price_info, is_additional_photo=False):
     policy_risk = judge_purchase_policy_risk(description=features)
     if policy_risk["policy_risk"] == "高":
         return build_policy_rejected_purchase_message(policy_risk)
@@ -1414,9 +1437,18 @@ def judge_line_purchase(features, price_info):
         raise Exception("OPENAI_API_KEY が設定されていません。")
 
     policy_risk_block = format_policy_risk_block(policy_risk)
+    additional_photo_instruction = ""
+    if is_additional_photo:
+        additional_photo_instruction = """
+今回は同じ商品の追加確認写真を反映した再判定です。
+返信の先頭は「追加写真を確認しました。」にしてください。
+通常の理由とは別に「追加確認：」を入れ、タグ、バーコード、裏面表示、素材、サイズ、汚れ、正規品らしさなど追加写真で確認できたことを短く書いてください。
+最後に「やめる場合は「キャンセル」と送ってください。」を入れてください。
+"""
     prompt = f"""
 以下の商品特徴と仕入価格をもとに、海外買付すべきか判定してください。
 LINEで読むため、以前の買付アドバイス型の自然で短い買付メモとして返してください。
+{additional_photo_instruction}
 
 内部では必ず次の順番で判定してください。
 1. 食品・健康系に該当しないか
@@ -1469,6 +1501,7 @@ LINE返信は必ず以下の形式だけにしてください。
 
 買付判定：買う / 保留 / 買付不可 のどれか
 - 商品候補
+- 追加確認（追加写真がある場合のみ）
 - 理由
 - 想定販売価格
 - 想定利益
@@ -1552,7 +1585,14 @@ def handle_line_purchase_judge_event(event, should_reply=True):
         text = normalize_line_text(raw_text)
         print(f"[LINE_TEXT] received_text={text}", flush=True)
 
-        if is_line_purchase_judge_start_text(text):
+        if is_line_purchase_judge_cancel_text(text):
+            print("[LINE_ROUTE] purchase_judge_cancel matched", flush=True)
+            upsert_line_judge_state(line_user_id, "終了")
+            reply_text = (
+                "買付ジャッジを終了しました。\n"
+                "次の商品を確認する場合は「買付ジャッジ」と送ってください。"
+            )
+        elif is_line_purchase_judge_start_text(text):
             print("[LINE_ROUTE] purchase_judge_start matched", flush=True)
             upsert_line_judge_state(line_user_id, "写真待ち")
             reply_text = LINE_PURCHASE_JUDGE_START_REPLY
@@ -1598,13 +1638,65 @@ def handle_line_purchase_judge_event(event, should_reply=True):
                         judge_result=judge_result
                     )
                     reply_text = judge_result
+            elif state and state.get("status") == "登録確認待ち":
+                print("[LINE_ROUTE] purchase_judge_after_result_text", flush=True)
+                if text == "登録":
+                    reply_text = "登録に進みます。買付登録画面で写真と商品情報を保存してください。"
+                else:
+                    reply_text = (
+                        "追加写真を送ると、同じ商品の追加確認として再判定します。\n"
+                        "買う場合は「登録」、やめる場合は「キャンセル」、次の商品を見る場合は「次の商品」と送ってください。"
+                    )
             else:
                 print("[LINE_ROUTE] purchase_judge_start_not_matched", flush=True)
                 reply_text = "買付ジャッジを始める場合は「買付ジャッジ」と送ってください。"
 
     elif message_type == "image":
         state = get_line_judge_state(line_user_id)
-        if not state or state.get("status") != "写真待ち":
+        if state and state.get("status") == "登録確認待ち":
+            print("[LINE_ROUTE] purchase_judge_additional_photo", flush=True)
+            image_bytes, mime_type = fetch_line_message_content(message.get("id", ""))
+            _, image_url = save_line_judge_image_to_drive(image_bytes, mime_type, line_user_id)
+            additional_features = analyze_line_judge_photo(image_bytes, mime_type)
+            combined_features = build_additional_photo_features(
+                state.get("features", ""),
+                additional_features
+            )
+            price_info = parse_purchase_price_text(state.get("purchase_price", ""))
+            if price_info["yen"] <= 0:
+                upsert_line_judge_state(
+                    line_user_id,
+                    "価格待ち",
+                    image_url="\n".join(filter(None, [state.get("image_url", ""), image_url])),
+                    features=combined_features,
+                    purchase_price=state.get("purchase_price", ""),
+                    judge_result=state.get("judge_result", "")
+                )
+                reply_text = (
+                    "追加写真を確認しました。\n\n"
+                    f"{additional_features}\n\n"
+                    "仕入価格をもう一度教えてください。例：500円"
+                )
+            else:
+                judge_features = build_line_purchase_features_for_judge(
+                    combined_features,
+                    state.get("purchase_price", "")
+                )
+                judge_result = judge_line_purchase(
+                    judge_features,
+                    price_info,
+                    is_additional_photo=True
+                )
+                upsert_line_judge_state(
+                    line_user_id,
+                    "登録確認待ち",
+                    image_url="\n".join(filter(None, [state.get("image_url", ""), image_url])),
+                    features=combined_features,
+                    purchase_price=state.get("purchase_price", ""),
+                    judge_result=judge_result
+                )
+                reply_text = judge_result
+        elif not state or state.get("status") != "写真待ち":
             reply_text = "先に「買付ジャッジ」と送ってから、商品の写真を送ってください。"
         else:
             image_bytes, mime_type = fetch_line_message_content(message.get("id", ""))
