@@ -777,6 +777,10 @@ HIGH_RISK_PURCHASE_KEYWORDS = [
     "効能",
     "免疫",
     "疲労回復",
+    "オイル",
+    "美容液",
+    "治る",
+    "痩せる",
     "医薬品",
     "医薬部外品",
     "薬",
@@ -856,6 +860,26 @@ IMPORT_LABEL_RISK_KEYWORDS = [
     "消費期限",
 ]
 
+LOW_RISK_GOODS_KEYWORDS = [
+    "トートバッグ",
+    "バッグ",
+    "ポーチ",
+    "衣類",
+    "パンツ",
+    "雑貨",
+    "布製品",
+    "キャラクターグッズ",
+    "スターバックス",
+    "starbucks",
+    "スタバ",
+]
+
+WEAK_CONTEXT_RISK_KEYWORDS = [
+    "コスメ",
+    "美容",
+    "化粧品",
+]
+
 def find_matched_keywords(text, keywords):
     normalized_text = str(text or "").lower()
     return [
@@ -874,6 +898,25 @@ def judge_purchase_policy_risk(product_name="", category="", memo="", descriptio
     medical_cosmetic_matches = find_matched_keywords(target_text, MEDICAL_COSMETIC_KEYWORDS)
     efficacy_matches = find_matched_keywords(target_text, EFFICACY_CLAIM_KEYWORDS)
     import_label_matches = find_matched_keywords(target_text, IMPORT_LABEL_RISK_KEYWORDS)
+    low_risk_goods_matches = find_matched_keywords(target_text, LOW_RISK_GOODS_KEYWORDS)
+
+    if low_risk_goods_matches:
+        weak_matches = set(find_matched_keywords(target_text, WEAK_CONTEXT_RISK_KEYWORDS))
+        high_risk_matches = [
+            keyword
+            for keyword in high_risk_matches
+            if keyword not in weak_matches
+        ]
+        medical_cosmetic_matches = [
+            keyword
+            for keyword in medical_cosmetic_matches
+            if keyword not in weak_matches
+        ]
+        efficacy_matches = [
+            keyword
+            for keyword in efficacy_matches
+            if keyword not in weak_matches
+        ]
 
     is_high_risk = bool(high_risk_matches)
     return {
@@ -889,6 +932,7 @@ def judge_purchase_policy_risk(product_name="", category="", memo="", descriptio
         "medical_cosmetic_matches": medical_cosmetic_matches,
         "efficacy_matches": efficacy_matches,
         "import_label_matches": import_label_matches,
+        "low_risk_goods_matches": low_risk_goods_matches,
     }
 
 def format_policy_risk_block(policy_risk):
@@ -1247,6 +1291,7 @@ def analyze_line_judge_photo(image_bytes, mime_type):
 写真の商品について、以下を日本語で短く整理してください。
 
 - 商品ジャンル
+- 商品候補
 - 見た目の特徴
 - 日本未発売感
 - 写真映え
@@ -1347,6 +1392,19 @@ def sanitize_line_purchase_reply(reply_text):
         visible_lines.append(line)
     return "\n".join(visible_lines).strip()
 
+def build_line_purchase_features_for_judge(features, price_text):
+    features_text = str(features or "").strip()
+    price_text = str(price_text or "").strip()
+    if features_text:
+        return "\n".join([
+            "【直前の写真解析結果】",
+            features_text,
+            "",
+            "【今回入力された仕入価格】",
+            price_text,
+        ])
+    return price_text
+
 def judge_line_purchase(features, price_info):
     policy_risk = judge_purchase_policy_risk(description=features)
     if policy_risk["policy_risk"] == "高":
@@ -1382,6 +1440,13 @@ LINEで読むため、以前の買付アドバイス型の自然で短い買付�
 商品名と価格だけで写真情報がない場合でも、衣類・雑貨など通常カテゴリなら仮の想定販売価格と想定利益を必ず出してください。
 例: 猫柄タイパンツ 300円なら、想定販売価格は1,200〜1,800円、想定利益は500〜900円前後のように幅で返してください。
 写真なしの場合は、買付判定を「要確認」または「条件付きで買い」にしてください。
+
+直前の写真解析結果がある場合は、価格テキストだけで商品カテゴリを判断しないでください。
+必ず写真解析結果の商品ジャンル、商品候補、見た目の特徴、メルカリ向けキーワードを優先して判定してください。
+トートバッグ、ポーチ、衣類、雑貨、布製品、キャラクターグッズ、スターバックスグッズは、医薬品・化粧品系として扱わないでください。
+スターバックスなどブランド品やブランド風グッズの場合は、買付不可にせず、注意点に以下を含めてください。
+正規品かどうか、タグ・ロゴ・縫製・購入元を確認してください。
+偽物や類似品の疑いがある場合は買付しないでください。
 
 【商品特徴】
 {features}
@@ -1517,12 +1582,18 @@ def handle_line_purchase_judge_event(event, should_reply=True):
                 if price_info["yen"] <= 0:
                     reply_text = "仕入価格を読み取れませんでした。例：250バーツ、1200円 のように送ってください。"
                 else:
-                    judge_result = judge_line_purchase(state.get("features", ""), price_info)
+                    stored_features = state.get("features", "")
+                    print(
+                        f"[LINE_CONTEXT] using_photo_features={bool(stored_features)} length={len(stored_features)}",
+                        flush=True
+                    )
+                    judge_features = build_line_purchase_features_for_judge(stored_features, text)
+                    judge_result = judge_line_purchase(judge_features, price_info)
                     upsert_line_judge_state(
                         line_user_id,
                         "登録確認待ち",
                         image_url=state.get("image_url", ""),
-                        features=state.get("features", ""),
+                        features=stored_features,
                         purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
                         judge_result=judge_result
                     )
