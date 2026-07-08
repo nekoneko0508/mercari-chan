@@ -752,6 +752,170 @@ def calculate_sales_values(sale_price, purchase_price, shipping_fee, packing_fee
     profit_rate = profit / sale_price if sale_price else 0
     return mercari_fee, profit, profit_rate
 
+HIGH_RISK_PURCHASE_KEYWORDS = [
+    "食品",
+    "飲料",
+    "健康食品",
+    "サプリ",
+    "サプリメント",
+    "ハーブ",
+    "パウダー",
+    "モリンガ",
+    "スーパーフード",
+    "栄養",
+    "栄養補助",
+    "ビタミン",
+    "ミネラル",
+    "ダイエット",
+    "デトックス",
+    "美容",
+    "健康",
+    "改善",
+    "治療",
+    "予防",
+    "効果",
+    "効能",
+    "免疫",
+    "疲労回復",
+    "医薬品",
+    "医薬部外品",
+    "薬",
+    "クリーム",
+    "化粧品",
+    "コスメ",
+    "小分け",
+    "成分不明",
+    "賞味期限",
+    "消費期限",
+    "海外製",
+]
+
+HIGH_RISK_PURCHASE_CATEGORIES = [
+    "食品",
+    "飲料",
+    "健康食品",
+    "サプリメント",
+    "ハーブパウダー",
+    "モリンガ",
+    "スーパーフード",
+    "栄養補助系商品",
+    "医薬品",
+    "医薬部外品",
+    "医薬品と誤認される商品",
+    "化粧品",
+    "小分け化粧品",
+    "海外製で成分・表示・賞味期限が確認しづらい商品",
+    "健康、美容、治療、改善、効能効果をうたいやすい商品",
+    "メルカリで削除・利用制限につながる可能性が高い商品",
+]
+
+FOOD_HEALTH_KEYWORDS = [
+    "食品",
+    "飲料",
+    "健康食品",
+    "サプリ",
+    "ハーブ",
+    "パウダー",
+    "モリンガ",
+    "スーパーフード",
+    "栄養",
+    "ビタミン",
+    "ミネラル",
+]
+
+MEDICAL_COSMETIC_KEYWORDS = [
+    "医薬品",
+    "医薬部外品",
+    "薬",
+    "クリーム",
+    "化粧品",
+    "コスメ",
+    "小分け",
+]
+
+EFFICACY_CLAIM_KEYWORDS = [
+    "ダイエット",
+    "デトックス",
+    "美容",
+    "健康",
+    "改善",
+    "治療",
+    "予防",
+    "効果",
+    "効能",
+    "免疫",
+    "疲労回復",
+]
+
+IMPORT_LABEL_RISK_KEYWORDS = [
+    "海外製",
+    "輸入",
+    "成分不明",
+    "表示",
+    "賞味期限",
+    "消費期限",
+]
+
+def find_matched_keywords(text, keywords):
+    normalized_text = str(text or "").lower()
+    return [
+        keyword
+        for keyword in keywords
+        if keyword.lower() in normalized_text
+    ]
+
+def judge_purchase_policy_risk(product_name="", category="", memo="", description=""):
+    target_text = "\n".join(
+        str(value or "")
+        for value in [product_name, category, memo, description]
+    )
+    high_risk_matches = find_matched_keywords(target_text, HIGH_RISK_PURCHASE_KEYWORDS)
+    food_health_matches = find_matched_keywords(target_text, FOOD_HEALTH_KEYWORDS)
+    medical_cosmetic_matches = find_matched_keywords(target_text, MEDICAL_COSMETIC_KEYWORDS)
+    efficacy_matches = find_matched_keywords(target_text, EFFICACY_CLAIM_KEYWORDS)
+    import_label_matches = find_matched_keywords(target_text, IMPORT_LABEL_RISK_KEYWORDS)
+
+    is_high_risk = bool(high_risk_matches)
+    return {
+        "sale_permission": "販売不可" if is_high_risk else "販売可",
+        "policy_risk": "高" if is_high_risk else "低",
+        "high_risk_category": is_high_risk,
+        "food_health": bool(food_health_matches),
+        "medical_cosmetic": bool(medical_cosmetic_matches),
+        "efficacy_claim": bool(efficacy_matches),
+        "import_label": bool(import_label_matches),
+        "matched_keywords": high_risk_matches,
+        "food_health_matches": food_health_matches,
+        "medical_cosmetic_matches": medical_cosmetic_matches,
+        "efficacy_matches": efficacy_matches,
+        "import_label_matches": import_label_matches,
+    }
+
+def format_policy_risk_block(policy_risk):
+    matched_keywords = "、".join(policy_risk.get("matched_keywords") or ["該当なし"])
+    return "\n".join([
+        f"販売可否確認: {policy_risk['sale_permission']}",
+        f"規約リスク: {policy_risk['policy_risk']}",
+        f"削除リスク高カテゴリ該当: {'はい' if policy_risk['high_risk_category'] else 'いいえ'}",
+        f"食品・健康系該当: {'はい' if policy_risk['food_health'] else 'いいえ'}",
+        f"医薬品・医薬部外品・化粧品該当: {'はい' if policy_risk['medical_cosmetic'] else 'いいえ'}",
+        f"効能効果表現リスク: {'はい' if policy_risk['efficacy_claim'] else 'いいえ'}",
+        f"海外輸入時の表示リスク: {'はい' if policy_risk['import_label'] else 'いいえ'}",
+        f"該当キーワード: {matched_keywords}",
+    ])
+
+def build_policy_rejected_purchase_message(policy_risk):
+    return "\n".join([
+        "最終買付判定: 買付不可",
+        "",
+        format_policy_risk_block(policy_risk),
+        "",
+        "買付判定理由:",
+        "買付不可。",
+        "この商品は削除リスク高カテゴリに該当する可能性があります。",
+        "利益が出る可能性があっても、メルカリで削除・利用制限につながるリスクがあるため、仕入れないでください。",
+    ])
+
 def parse_mercari_purchase_email(email_text):
     text = str(email_text or "")
 
@@ -1123,8 +1287,32 @@ def judge_line_purchase(features, price_info):
     if not client:
         raise Exception("OPENAI_API_KEY が設定されていません。")
 
+    policy_risk = judge_purchase_policy_risk(description=features)
+    if policy_risk["policy_risk"] == "高":
+        return build_policy_rejected_purchase_message(policy_risk)
+
+    policy_risk_block = format_policy_risk_block(policy_risk)
     prompt = f"""
 以下の商品特徴と仕入価格をもとに、海外買付すべきか判定してください。
+
+必ず次の順番で判定してください。
+1. 規約リスク判定
+2. 販売可否判定
+3. 利益率判定
+4. 想定利益額判定
+5. 発信・検証目的の例外判定
+6. 最終買付判定
+
+規約リスクが高い商品、削除リスク高カテゴリの商品、食品、飲料、健康食品、サプリメント、
+ハーブパウダー、医薬品誤認商品、医薬部外品、化粧品は、利益が出そうでも買付不可にしてください。
+
+規約リスクが低い商品のみ、以下の利益基準で判定してください。
+- 利益率25％以上
+- 想定利益500円以上
+
+上記2つを満たす場合だけ「買付OK」候補です。
+利益500円未満でも、発信ネタ、写真映え、売れ筋検証、少額テストとして意味がある場合は「要確認」または「検証目的なら可」としてください。
+ただし削除リスク高カテゴリは例外不可です。
 
 【商品特徴】
 {features}
@@ -1133,28 +1321,58 @@ def judge_line_purchase(features, price_info):
 入力: {price_info.get('original_text')}
 概算円: {price_info.get('yen')}円
 
+【規約リスクの事前判定】
+{policy_risk_block}
+
 100点満点で採点してください。
 点数配分:
-- 写真映え: 20点
-- 日本未発売感: 20点
-- メルカリ需要: 20点
-- 利益見込み: 25点
-- 発送しやすさ: 15点
+- 販売可否・規約リスク: 35点
+- 削除されにくさ: 20点
+- 利益率25％以上: 15点
+- 想定利益500円以上: 15点
+- 写真映え・検証価値: 10点
+- 発送しやすさ: 5点
 
 判定:
-- 80点以上: 買う
-- 60〜79点: 保留
-- 59点以下: 買わない
+- 買付OK: 規約リスクが低く、利益率25％以上、想定利益500円以上を満たす
+- 要確認: 販売可否、表示義務、成分、効能表現、または利益基準に確認余地がある
+- 買付不可: 規約リスクが高い、削除リスクが高い、または利益基準を満たさない
 
 必ず以下の項目を含めて、LINEで読みやすい短めの日本語で返してください。
-- 買付判定
+- 最終買付判定（買付OK / 要確認 / 買付不可 のどれか）
+- 規約リスク
+- 販売可否確認
+- 削除リスク高カテゴリ該当
+- 食品・健康系該当
+- 医薬品・医薬部外品・化粧品該当
+- 効能効果表現リスク
+- 海外輸入時の表示リスク
 - スコア
 - 商品候補
-- 理由
+- 買付判定理由
 - 想定販売価格
+- 利益率判定
 - 想定利益
 - 注意点
-- 買う場合は「登録」と送る案内
+
+最終買付判定ごとの説明文は以下に合わせてください。
+
+買付OKの場合:
+買付OK。
+規約リスクは低く、メルカリ販売に大きな問題はありません。
+利益率25％以上、想定利益500円以上を満たしているため、買付候補とします。
+
+要確認の場合:
+要確認。
+現時点では販売可否が判断しきれません。
+メルカリ禁止出品物、表示義務、成分、効能表現の有無を確認するまで買付しないでください。
+
+買付不可の場合:
+買付不可。
+この商品は削除リスク高カテゴリに該当する可能性があります。
+利益が出る可能性があっても、メルカリで削除・利用制限につながるリスクがあるため、仕入れないでください。
+
+買付OKの場合だけ、最後に「登録」と送る案内を入れてください。
 """
 
     response = client.chat.completions.create(
