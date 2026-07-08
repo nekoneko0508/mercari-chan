@@ -917,16 +917,19 @@ def build_policy_rejected_purchase_message(policy_risk):
         risk_reason = "削除リスク高カテゴリに該当する可能性があるため"
 
     return "\n".join([
-        "最終買付判定: 買付不可",
+        "買付判定: 買付不可",
         "",
-        format_policy_risk_block(policy_risk),
+        "規約リスク: 高",
         "",
         f"理由: {risk_reason}",
         "",
-        "買付判定理由:",
-        "買付不可。",
-        "この商品は削除リスク高カテゴリに該当する可能性があります。",
-        "利益が出る可能性があっても、メルカリで削除・利用制限につながるリスクがあるため、仕入れないでください。",
+        "スコア: 0点",
+        "商品候補: 対象外",
+        "想定販売価格: 判定しません",
+        "想定利益: 判定しません",
+        "",
+        "注意点: 利益が出る可能性があっても、メルカリで削除・利用制限につながるリスクがあります。",
+        "次の行動: 仕入れないでください。",
     ])
 
 def parse_mercari_purchase_email(email_text):
@@ -1315,6 +1318,25 @@ def is_line_purchase_judge_start_text(text):
     normalized_text = str(text or "").strip()
     return normalized_text in LINE_PURCHASE_JUDGE_START_TEXTS
 
+def sanitize_line_purchase_reply(reply_text):
+    hidden_prefixes = [
+        "販売可否確認",
+        "削除リスク高カテゴリ該当",
+        "食品・健康系該当",
+        "医薬品・医薬部外品・化粧品該当",
+        "効能効果表現リスク",
+        "海外輸入時の表示リスク",
+        "利益率判定",
+        "スコア加点",
+    ]
+    visible_lines = []
+    for line in str(reply_text or "").splitlines():
+        stripped_line = line.strip()
+        if any(stripped_line.startswith(prefix) for prefix in hidden_prefixes):
+            continue
+        visible_lines.append(line)
+    return "\n".join(visible_lines).strip()
+
 def judge_line_purchase(features, price_info):
     policy_risk = judge_purchase_policy_risk(description=features)
     if policy_risk["policy_risk"] == "高":
@@ -1326,13 +1348,14 @@ def judge_line_purchase(features, price_info):
     policy_risk_block = format_policy_risk_block(policy_risk)
     prompt = f"""
 以下の商品特徴と仕入価格をもとに、海外買付すべきか判定してください。
+LINEで読むため、内部チェック項目をそのまま出さず、自然で短い買付メモとして返してください。
 
 必ず次の順番で判定してください。
-1. 規約リスク判定
-2. 販売可否判定
-3. 利益率判定
-4. 想定利益額判定
-5. 発信・検証目的の例外判定
+1. 食品・健康系に該当しないか
+2. 規約リスクが高くないか
+3. 許可カテゴリに該当するか
+4. 利益率25％以上か
+5. 想定利益500円以上か
 6. 最終買付判定
 
 規約リスクが高い商品、削除リスク高カテゴリの商品、食品、飲料、健康食品、サプリメント、
@@ -1346,6 +1369,10 @@ def judge_line_purchase(features, price_info):
 利益500円未満でも、発信ネタ、写真映え、売れ筋検証、少額テストとして意味がある場合は「要確認」または「検証目的なら可」としてください。
 ただし削除リスク高カテゴリは例外不可です。
 
+商品名と価格だけで写真情報がない場合でも、衣類・雑貨など通常カテゴリなら仮の想定販売価格と想定利益を必ず出してください。
+例: 猫柄タイパンツ 300円なら、想定販売価格は1,200〜1,800円、想定利益は500〜900円前後のように幅で返してください。
+写真なしの場合は、買付判定を「要確認」または「条件付きで買い」にしてください。
+
 【商品特徴】
 {features}
 
@@ -1356,36 +1383,32 @@ def judge_line_purchase(features, price_info):
 【規約リスクの事前判定】
 {policy_risk_block}
 
-100点満点で採点してください。
-点数配分:
-- 販売可否・規約リスク: 35点
-- 削除されにくさ: 20点
-- 利益率25％以上: 15点
-- 想定利益500円以上: 15点
-- 写真映え・検証価値: 10点
-- 発送しやすさ: 5点
+100点満点で採点してください。ただし、スコア加点の内訳は表示しないでください。
 
 判定:
 - 買付OK: 規約リスクが低く、利益率25％以上、想定利益500円以上を満たす
 - 要確認: 販売可否、表示義務、成分、効能表現、または利益基準に確認余地がある
 - 買付不可: 規約リスクが高い、削除リスクが高い、または利益基準を満たさない
 
-必ず以下の項目を含めて、LINEで読みやすい短めの日本語で返してください。
-- 最終買付判定（買付OK / 要確認 / 買付不可 のどれか）
+LINE返信に表示する項目は、必ず以下だけにしてください。
+- 買付判定（買付OK / 要確認 / 買付不可 / 条件付きで買い のどれか）
 - 規約リスク
+- スコア
+- 商品候補
+- 理由
+- 想定販売価格
+- 想定利益
+- 注意点
+- 次の行動
+
+以下の内部項目はLINE返信に表示しないでください。
 - 販売可否確認
 - 削除リスク高カテゴリ該当
 - 食品・健康系該当
 - 医薬品・医薬部外品・化粧品該当
 - 効能効果表現リスク
 - 海外輸入時の表示リスク
-- スコア
-- 商品候補
-- 買付判定理由
-- 想定販売価格
-- 利益率判定
-- 想定利益
-- 注意点
+- スコア加点の内訳
 
 最終買付判定ごとの説明文は以下に合わせてください。
 
@@ -1404,7 +1427,7 @@ def judge_line_purchase(features, price_info):
 この商品は削除リスク高カテゴリに該当する可能性があります。
 利益が出る可能性があっても、メルカリで削除・利用制限につながるリスクがあるため、仕入れないでください。
 
-買付OKの場合だけ、最後に「登録」と送る案内を入れてください。
+買付OKまたは条件付きで買いの場合だけ、次の行動に「写真確認後、問題なければ登録」と入れてください。
 """
 
     response = client.chat.completions.create(
@@ -1415,7 +1438,7 @@ def judge_line_purchase(features, price_info):
         ],
         temperature=0.5
     )
-    return response.choices[0].message.content
+    return sanitize_line_purchase_reply(response.choices[0].message.content)
 
 def reply_line_text(reply_token, text):
     token = get_line_channel_access_token()
