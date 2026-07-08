@@ -1309,14 +1309,21 @@ LINE_PURCHASE_JUDGE_START_TEXTS = [
 
 LINE_PURCHASE_JUDGE_START_REPLY = """買付ジャッジを開始します。
 
-気になる商品の写真を送ってください。
+気になる商品の写真、または
+商品名と仕入価格を送ってください。
 
 先にメルカリ販売可否と規約リスクを確認します。
 食品・健康食品・サプリ・ハーブパウダー・医薬品・医薬部外品・化粧品など、削除リスクが高い商品は利益に関係なく買付不可になります。"""
 
+def normalize_line_text(text):
+    return re.sub(r"\s+", " ", str(text or "").replace("　", " ")).strip()
+
 def is_line_purchase_judge_start_text(text):
-    normalized_text = str(text or "").strip()
-    return normalized_text in LINE_PURCHASE_JUDGE_START_TEXTS
+    normalized_text = normalize_line_text(text)
+    return (
+        normalized_text in LINE_PURCHASE_JUDGE_START_TEXTS
+        or "買付ジャッジ" in normalized_text
+    )
 
 def sanitize_line_purchase_reply(reply_text):
     hidden_prefixes = [
@@ -1472,44 +1479,53 @@ def handle_line_purchase_judge_event(event, should_reply=True):
         return "LINEユーザーIDが取得できませんでした。"
 
     if message_type == "text":
-        text = message.get("text", "").strip()
-        state = get_line_judge_state(line_user_id)
+        raw_text = message.get("text", "")
+        text = normalize_line_text(raw_text)
+        print(f"[LINE_TEXT] received_text={text}", flush=True)
 
         if is_line_purchase_judge_start_text(text):
+            print("[LINE_ROUTE] purchase_judge_start matched", flush=True)
             upsert_line_judge_state(line_user_id, "写真待ち")
             reply_text = LINE_PURCHASE_JUDGE_START_REPLY
-        elif state and state.get("status") == "写真待ち":
-            price_info = parse_purchase_price_text(text)
-            if price_info["yen"] <= 0:
-                reply_text = "気になる商品の写真を送ってください。商品名と価格をテキストで送る場合は、例：猫柄タイパンツ 300円 のように送ってください。"
-            else:
-                judge_result = judge_line_purchase(text, price_info)
-                upsert_line_judge_state(
-                    line_user_id,
-                    "登録確認待ち",
-                    image_url=state.get("image_url", ""),
-                    features=text,
-                    purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
-                    judge_result=judge_result
-                )
-                reply_text = judge_result
-        elif state and state.get("status") == "価格待ち":
-            price_info = parse_purchase_price_text(text)
-            if price_info["yen"] <= 0:
-                reply_text = "仕入価格を読み取れませんでした。例：250バーツ、1200円 のように送ってください。"
-            else:
-                judge_result = judge_line_purchase(state.get("features", ""), price_info)
-                upsert_line_judge_state(
-                    line_user_id,
-                    "登録確認待ち",
-                    image_url=state.get("image_url", ""),
-                    features=state.get("features", ""),
-                    purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
-                    judge_result=judge_result
-                )
-                reply_text = judge_result
         else:
-            reply_text = "買付ジャッジを始める場合は「買付ジャッジ」と送ってください。"
+            state = get_line_judge_state(line_user_id)
+            print(f"[LINE_ROUTE] current_status={state.get('status') if state else 'none'}", flush=True)
+
+            if state and state.get("status") == "写真待ち":
+                print("[LINE_ROUTE] purchase_judge_photo_wait_text", flush=True)
+                price_info = parse_purchase_price_text(text)
+                if price_info["yen"] <= 0:
+                    reply_text = "気になる商品の写真を送ってください。商品名と価格をテキストで送る場合は、例：猫柄タイパンツ 300円 のように送ってください。"
+                else:
+                    judge_result = judge_line_purchase(text, price_info)
+                    upsert_line_judge_state(
+                        line_user_id,
+                        "登録確認待ち",
+                        image_url=state.get("image_url", ""),
+                        features=text,
+                        purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
+                        judge_result=judge_result
+                    )
+                    reply_text = judge_result
+            elif state and state.get("status") == "価格待ち":
+                print("[LINE_ROUTE] purchase_judge_price_wait_text", flush=True)
+                price_info = parse_purchase_price_text(text)
+                if price_info["yen"] <= 0:
+                    reply_text = "仕入価格を読み取れませんでした。例：250バーツ、1200円 のように送ってください。"
+                else:
+                    judge_result = judge_line_purchase(state.get("features", ""), price_info)
+                    upsert_line_judge_state(
+                        line_user_id,
+                        "登録確認待ち",
+                        image_url=state.get("image_url", ""),
+                        features=state.get("features", ""),
+                        purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
+                        judge_result=judge_result
+                    )
+                    reply_text = judge_result
+            else:
+                print("[LINE_ROUTE] purchase_judge_start_not_matched", flush=True)
+                reply_text = "買付ジャッジを始める場合は「買付ジャッジ」と送ってください。"
 
     elif message_type == "image":
         state = get_line_judge_state(line_user_id)
