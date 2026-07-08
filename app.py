@@ -905,10 +905,23 @@ def format_policy_risk_block(policy_risk):
     ])
 
 def build_policy_rejected_purchase_message(policy_risk):
+    if policy_risk.get("food_health"):
+        risk_reason = "食品・健康系またはハーブパウダー系に該当するため"
+    elif policy_risk.get("medical_cosmetic"):
+        risk_reason = "医薬品・医薬部外品・化粧品系に該当するため"
+    elif policy_risk.get("efficacy_claim"):
+        risk_reason = "健康、美容、治療、改善などの効能効果表現リスクがあるため"
+    elif policy_risk.get("import_label"):
+        risk_reason = "海外輸入時の成分・表示・賞味期限確認リスクがあるため"
+    else:
+        risk_reason = "削除リスク高カテゴリに該当する可能性があるため"
+
     return "\n".join([
         "最終買付判定: 買付不可",
         "",
         format_policy_risk_block(policy_risk),
+        "",
+        f"理由: {risk_reason}",
         "",
         "買付判定理由:",
         "買付不可。",
@@ -1283,13 +1296,32 @@ def parse_purchase_price_text(price_text):
         "yen": yen
     }
 
-def judge_line_purchase(features, price_info):
-    if not client:
-        raise Exception("OPENAI_API_KEY が設定されていません。")
+LINE_PURCHASE_JUDGE_START_TEXTS = [
+    "買付ジャッジ",
+    "買付",
+    "仕入れ判断",
+    "仕入判断",
+    "ジャッジ",
+]
 
+LINE_PURCHASE_JUDGE_START_REPLY = """買付ジャッジを開始します。
+
+気になる商品の写真を送ってください。
+
+先にメルカリ販売可否と規約リスクを確認します。
+食品・健康食品・サプリ・ハーブパウダー・医薬品・医薬部外品・化粧品など、削除リスクが高い商品は利益に関係なく買付不可になります。"""
+
+def is_line_purchase_judge_start_text(text):
+    normalized_text = str(text or "").strip()
+    return normalized_text in LINE_PURCHASE_JUDGE_START_TEXTS
+
+def judge_line_purchase(features, price_info):
     policy_risk = judge_purchase_policy_risk(description=features)
     if policy_risk["policy_risk"] == "高":
         return build_policy_rejected_purchase_message(policy_risk)
+
+    if not client:
+        raise Exception("OPENAI_API_KEY が設定されていません。")
 
     policy_risk_block = format_policy_risk_block(policy_risk)
     prompt = f"""
@@ -1420,9 +1452,24 @@ def handle_line_purchase_judge_event(event, should_reply=True):
         text = message.get("text", "").strip()
         state = get_line_judge_state(line_user_id)
 
-        if text == "買付ジャッジ":
+        if is_line_purchase_judge_start_text(text):
             upsert_line_judge_state(line_user_id, "写真待ち")
-            reply_text = "気になる商品の写真を送ってください。"
+            reply_text = LINE_PURCHASE_JUDGE_START_REPLY
+        elif state and state.get("status") == "写真待ち":
+            price_info = parse_purchase_price_text(text)
+            if price_info["yen"] <= 0:
+                reply_text = "気になる商品の写真を送ってください。商品名と価格をテキストで送る場合は、例：猫柄タイパンツ 300円 のように送ってください。"
+            else:
+                judge_result = judge_line_purchase(text, price_info)
+                upsert_line_judge_state(
+                    line_user_id,
+                    "登録確認待ち",
+                    image_url=state.get("image_url", ""),
+                    features=text,
+                    purchase_price=f"{price_info['original_text']}（概算 {price_info['yen']}円）",
+                    judge_result=judge_result
+                )
+                reply_text = judge_result
         elif state and state.get("status") == "価格待ち":
             price_info = parse_purchase_price_text(text)
             if price_info["yen"] <= 0:
