@@ -3,7 +3,9 @@ import json
 import uuid
 import base64
 import io
+import html
 import re
+import time
 from datetime import date, datetime
 import requests
 
@@ -30,7 +32,22 @@ SERVICE_ACCOUNT_FILE = (
     else "service_account.json"
 )
 DRIVE_FOLDER_ID = "1gNzzHYcjQcO7emNLWAQph9c8hIw-aXXG"
-APPS_SCRIPT_PHOTO_URL = "https://script.google.com/macros/s/AKfycbzCY9tsIZuSqbVMyCuTZvhwYrRLXwvEzVYqcA2kiCtQZ_aqHskn9OfaylmGsgmbtNpT/exec"
+DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzCY9tsIZuSqbVMyCuTZvhwYrRLXwvEzVYqcA2kiCtQZ_aqHskn9OfaylmGsgmbtNpT/exec"
+
+
+def get_apps_script_url():
+    """環境変数またはStreamlit SecretsからApps Script URLを取得する。"""
+    configured_url = os.getenv("APPS_SCRIPT_URL", "")
+
+    try:
+        configured_url = st.secrets.get("APPS_SCRIPT_URL", "") or configured_url
+    except Exception:
+        pass
+
+    return str(configured_url or DEFAULT_APPS_SCRIPT_URL).strip()
+
+
+APPS_SCRIPT_URL = get_apps_script_url()
 PHOTO_SAVE_TOKEN = "mercari-chan-photo-save"
 
 # ローカルでは .env、公開版では Streamlit Secrets からAPIキーを読む
@@ -246,6 +263,99 @@ def image_to_base64(uploaded_file):
     image_bytes = uploaded_file.getvalue()
     return base64.b64encode(image_bytes).decode("utf-8")
 
+
+class AppsScriptError(RuntimeError):
+    """Apps Script呼び出しの設定・通信・応答エラー。"""
+
+
+def validate_apps_script_url(url):
+    expected_pattern = r"^https://script\.google\.com/macros/s/[^/]+/exec(?:\?.*)?$"
+    if "script.google.com/macros/s/" not in url or not re.match(expected_pattern, url):
+        raise AppsScriptError(
+            "Apps Script URL Error\n"
+            f"URL: {url or '(未設定)'}\n"
+            "Expected: https://script.google.com/macros/s/xxxxx/exec"
+        )
+
+
+def format_apps_script_response_body(response_body, max_length=1000):
+    """HTML応答から画面表示に必要な本文だけを読みやすく取り出す。"""
+    text = str(response_body or "").strip()
+    if not text:
+        return "(empty response)"
+
+    if re.search(r"<[a-zA-Z][^>]*>", text):
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = html.unescape(text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_length:
+        return text[:max_length] + "... (truncated)"
+    return text
+
+
+def make_apps_script_error(status, response_body):
+    readable_body = format_apps_script_response_body(response_body)
+    return AppsScriptError(
+        "Apps Script Error\n"
+        f"Status: {status}\n"
+        f"URL: {APPS_SCRIPT_URL}\n"
+        "Response:\n"
+        f"{readable_body}"
+    )
+
+
+def post_to_apps_script(payload):
+    """URL検証・ログ・エラー整形を共通化してApps Scriptへ送信する。"""
+    validate_apps_script_url(APPS_SCRIPT_URL)
+    print("Apps Script URL:", APPS_SCRIPT_URL, flush=True)
+
+    try:
+        # ContentServiceは結果取得用URLへ302を返す。requestsの自動転送では
+        # 転送先が一時的に404になることがあるため、POSTを重複させずGETだけ再試行する。
+        response = requests.post(
+            APPS_SCRIPT_URL,
+            json=payload,
+            timeout=60,
+            allow_redirects=False
+        )
+
+        if response.status_code in (301, 302, 303):
+            redirect_url = response.headers.get("Location", "")
+            if not redirect_url.startswith("https://script.googleusercontent.com/macros/echo?"):
+                raise make_apps_script_error(
+                    response.status_code,
+                    f"Unexpected redirect URL: {redirect_url or '(missing)'}"
+                )
+
+            for retry_index in range(3):
+                if retry_index:
+                    time.sleep(0.5 * retry_index)
+                response = requests.get(redirect_url, timeout=60)
+                if response.status_code != 404:
+                    break
+    except requests.RequestException as exc:
+        raise make_apps_script_error("N/A", str(exc)) from exc
+
+    if response.status_code != 200:
+        raise make_apps_script_error(response.status_code, response.text)
+
+    try:
+        result = response.json()
+    except ValueError as exc:
+        message = "Apps ScriptからJSON以外が返ってきました。 " + response.text
+        raise make_apps_script_error(response.status_code, message) from exc
+
+    if not result.get("success"):
+        raise make_apps_script_error(
+            response.status_code,
+            result.get("error", "写真保存に失敗しました")
+        )
+
+    return result
+
+
 def save_uploaded_purchase_photo(uploaded_file):
     if uploaded_file is None:
         return "", ""
@@ -263,19 +373,7 @@ def save_uploaded_purchase_photo(uploaded_file):
         "base64Data": base64_data
     }
 
-    response = requests.post(APPS_SCRIPT_PHOTO_URL, json=payload, timeout=60)
-
-    # Apps Scriptから返ってきた内容を確認しやすくする
-    if response.status_code != 200:
-        raise Exception(f"Apps Scriptエラー status={response.status_code}: {response.text[:500]}")
-
-    try:
-        result = response.json()
-    except Exception:
-        raise Exception(f"Apps ScriptからJSON以外が返ってきました: {response.text[:500]}")
-
-    if not result.get("success"):
-        raise Exception(result.get("error", "写真保存に失敗しました"))
+    result = post_to_apps_script(payload)
 
     file_url = result.get("fileUrl", "")
     return file_name, file_url
@@ -1267,17 +1365,7 @@ def save_line_judge_image_to_drive(image_bytes, mime_type, line_user_id):
         "base64Data": base64.b64encode(image_bytes).decode("utf-8")
     }
 
-    response = requests.post(APPS_SCRIPT_PHOTO_URL, json=payload, timeout=60)
-    if response.status_code != 200:
-        raise Exception(f"Apps Scriptエラー status={response.status_code}: {response.text[:500]}")
-
-    try:
-        result = response.json()
-    except Exception:
-        raise Exception(f"Apps ScriptからJSON以外が返ってきました: {response.text[:500]}")
-
-    if not result.get("success"):
-        raise Exception(result.get("error", "写真保存に失敗しました"))
+    result = post_to_apps_script(payload)
 
     return file_name, result.get("fileUrl", "")
 
